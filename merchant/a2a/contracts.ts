@@ -14,7 +14,7 @@ export const rfqIssueSchema = z.strictObject({
 });
 export const merchantRFQResponseSchema = z.strictObject({
   contractVersion: z.literal("1"), merchantId: idSchema, rfqId: idSchema, correlationId: idSchema,
-  outcome: z.enum(["quoted", "partial", "declined", "expired", "failed"]),
+  outcome: z.enum(["pending", "quoted", "partial", "declined", "expired", "failed"]),
   message: z.string().min(1), issues: z.array(rfqIssueSchema), quote: quoteSchema.optional(),
   serviceWindow: z.strictObject({ startsAt: timestampSchema, endsAt: timestampSchema }).optional(),
 }).refine(v => (v.outcome === "quoted" || v.outcome === "partial") === Boolean(v.quote), "Үнийн саналын үр дүн тохирохгүй байна.");

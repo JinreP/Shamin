@@ -7,7 +7,7 @@ import { DEMO_MERCHANTS } from "../demo-merchants";
 import { inventorySchema, serviceSchema, settingsSchema } from "../private-contracts";
 import { merchantName } from "../i18n";
 import {
-  approvalIntentRequestSchema, availabilityResultSchema, commerceApprovalSchema, commerceTransactionSchema,
+  approvalIntentRequestSchema, approvalPageSchema, availabilityResultSchema, commerceApprovalSchema, commerceTransactionSchema,
   mockPaymentSchema, partsOrderSchema, quoteSelectionSchema, repairBookingSchema,
   type AvailabilityResult, type BookingTerms, type CommerceApproval, type QuoteSelection,
 } from "./contracts";
@@ -142,7 +142,7 @@ export class CommerceStore {
           const publication = await this.db.collection("merchant_quote_publications").findOne({
             merchantId: quote.merchantId, quoteId: quote.id, quoteRevision: quote.revision, status: "published",
           }, session ? { session } : {});
-          if (publication?.source === "negotiated") {
+          if (publication?.source === "negotiated" || publication?.source === "human_confirmed") {
             const policyDoc = await this.db.collection("merchant_settings").findOne({ merchantId: quote.merchantId, id: quote.merchantId },
               session ? { session } : {});
             const policy = policyDoc ? settingsSchema.parse(domain(policyDoc)) : null;
@@ -194,7 +194,7 @@ export class CommerceStore {
           const publication = await this.db.collection("merchant_quote_publications").findOne({
             merchantId: quote.merchantId, quoteId: quote.id, quoteRevision: quote.revision, status: "published",
           }, session ? { session } : {});
-          if (publication?.source === "negotiated") {
+          if (publication?.source === "negotiated" || publication?.source === "human_confirmed") {
             const policyDoc = await this.db.collection("merchant_settings").findOne({ merchantId: quote.merchantId, id: quote.merchantId },
               session ? { session } : {});
             const policy = policyDoc ? settingsSchema.parse(domain(policyDoc)) : null;
@@ -308,9 +308,10 @@ export class CommerceStore {
       total: approval.approvedTotal, ...(approval.booking ? { booking: approval.booking } : {}),
       expiresAt: approval.expiresAt, status,
       quoteSummaries: quotes.map(quote => ({ merchantName: merchantName(quote.merchantId), quoteId: quote.id,
-        revision: quote.revision, kind: quote.kind, terms: quote.terms })),
+        revision: quote.revision, kind: quote.kind, terms: quote.terms,
+        ...(quote.repairEstimate ? { repairEstimate: quote.repairEstimate } : {}) })),
     };
-    return { approvalId: approval.id, page, merchantId: approval.merchantId };
+    return { approvalId: approval.id, page: approvalPageSchema.parse(page), merchantId: approval.merchantId };
   }
 
   async approveByChallenge(challenge: string, action: "approve" | "reject"): Promise<void> {
@@ -494,7 +495,9 @@ export class CommerceStore {
           merchantId: quote.merchantId, buyerId, approvalId: approval.id, quoteId: quote.id, quoteRevision: quote.revision,
           serviceIds: quote.lines.map(line => line.resourceId), slotId: slot.id,
           startsAt: bookingTerms.startsAt, endsAt: bookingTerms.endsAt,
-          customerSuppliedParts: bookingTerms.customerSuppliedParts, status: "booked", createdAt: now, updatedAt: now });
+          customerSuppliedParts: bookingTerms.customerSuppliedParts,
+          ...(quote.repairEstimate ? { repairEstimate: quote.repairEstimate } : {}),
+          status: "booked", createdAt: now, updatedAt: now });
         // MongoDB mutates the inserted object by adding _id. Keep the public
         // strict booking contract free of storage metadata on the first call.
         await this.db.collection(bookings).insertOne({ ...booking }, { session });

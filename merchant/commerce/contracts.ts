@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { idSchema, moneySchema, quoteSchema, timestampSchema, transactionSchema } from "../../shared/merchant-contracts";
+import { idSchema, moneySchema, quoteSchema, repairEstimateSchema, timestampSchema, transactionSchema } from "../../shared/merchant-contracts";
 
 export const quoteSelectionSchema = z.strictObject({
   merchantId: idSchema,
@@ -68,7 +68,7 @@ export const repairBookingSchema = z.strictObject({
   contractVersion: z.literal("1"), id: idSchema, transactionId: idSchema, merchantId: idSchema, buyerId: idSchema,
   approvalId: idSchema, quoteId: idSchema, quoteRevision: z.number().int().positive(),
   serviceIds: z.array(idSchema).min(1), slotId: idSchema, startsAt: timestampSchema, endsAt: timestampSchema,
-  customerSuppliedParts: z.boolean(),
+  customerSuppliedParts: z.boolean(), repairEstimate: repairEstimateSchema.optional(),
   status: z.enum(["booked", "in_service", "completed", "cancelled", "recovery_required"]),
   createdAt: timestampSchema, updatedAt: timestampSchema,
 });
@@ -93,13 +93,14 @@ export const commerceTransactionSchema = z.strictObject({
 
 export const approvalPageSchema = z.strictObject({
   transactionId: idSchema,
-  buyerId: idSchema,
   merchantNames: z.array(z.string().min(1)),
-  selections: z.array(quoteSelectionSchema).min(1),
   total: moneySchema,
   booking: bookingTermsSchema.optional(),
   expiresAt: timestampSchema,
   status: z.enum(["pending", "verified", "expired", "revoked"]),
+  quoteSummaries: z.array(z.strictObject({ merchantName: z.string().min(1), quoteId: idSchema,
+    revision: z.number().int().positive(), kind: z.enum(["parts", "repair"]), terms: z.string().min(1).max(4000),
+    repairEstimate: repairEstimateSchema.optional() })),
 });
 
 export type QuoteSelection = z.infer<typeof quoteSelectionSchema>;

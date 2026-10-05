@@ -43,6 +43,15 @@ export const settingsSchema = z.strictObject({ ...base, maxDiscountBps: z.number
   automaticNegotiationEnabled: z.boolean().default(false),
   negotiationTimeoutSeconds: z.number().int().min(30).max(3600).default(300),
 }).refine(v => v.id === v.merchantId, "Тохиргооны дугаар худалдаачны дугаартай ижил байх ёстой.");
+const wholeMnt = moneySchema.refine(value => value.currency === "MNT" && value.amountMinor % 100 === 0,
+  "Үнийг бүхэл төгрөгөөр оруулна уу.");
+export const repairQuoteNegotiationPolicySchema = z.strictObject({
+  floorPrice: wholeMnt,
+  humanApprovalBelow: wholeMnt.nullable(),
+  automaticNegotiationEnabled: z.boolean(),
+  maxRounds: z.number().int().min(1).max(5),
+});
+export type RepairQuoteNegotiationPolicy = z.infer<typeof repairQuoteNegotiationPolicySchema>;
 export const adminSchemas = { profile: merchantProfileSchema, inventory: inventorySchema,
   service: serviceSchema, slot: slotSchema, settings: settingsSchema };
 export type AdminResource = keyof typeof adminSchemas;

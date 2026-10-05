@@ -6,9 +6,9 @@ import { DEMO_MERCHANTS } from "../demo-merchants";
 import { loadScopedRFQContext, ScopedRFQDataError } from "../a2a/data";
 import type { MerchantRFQEnvelope } from "../a2a/contracts";
 import { RFQ_PROCESSING_COLLECTION } from "../a2a/store";
-import type { TelegramBinding } from "../telegram/contracts";
+import { quoteDraftSchema, type TelegramBinding } from "../telegram/contracts";
 import { telegramIdentitySchema } from "../telegram/contracts";
-import { settingsSchema } from "../private-contracts";
+import { repairQuoteNegotiationPolicySchema, settingsSchema, type RepairQuoteNegotiationPolicy } from "../private-contracts";
 import { priceNegotiatedQuote, validateHumanNegotiationPrice, NegotiationRuleError } from "./engine";
 import { negotiateQuoteRequestSchema, negotiationResponseSchema,
   type NegotiationCode, type NegotiationResponse, type NegotiationRequest } from "./contracts";
@@ -71,6 +71,25 @@ export class NegotiationStore {
     } finally {
       await session.endSession();
     }
+  }
+
+  private async repairPolicy(merchantId: string, quote: Quote, session: ClientSession): Promise<RepairQuoteNegotiationPolicy | null> {
+    if (quote.kind !== "repair") return null;
+    const record = await this.db.collection("merchant_telegram_drafts").findOne({ merchantId, rfqId: quote.rfqId,
+      status: "confirmed", "draft.repairNegotiationPolicy": { $exists: true, $ne: null } },
+    { session, sort: { quoteRevision: -1, createdAt: -1 } });
+    if (!record) return null;
+    const draft = quoteDraftSchema.safeParse(record.draft);
+    const policy = repairQuoteNegotiationPolicySchema.safeParse(draft.success ? draft.data.repairNegotiationPolicy : null);
+    const baseDocument = await this.db.collection("merchant_quotes").findOne({ merchantId, id: record.quoteId,
+      revision: record.quoteRevision, rfqId: quote.rfqId }, { session });
+    const baseQuote = baseDocument ? quoteSchema.safeParse(domain(baseDocument)) : null;
+    if (!policy.success || !quote.repairEstimate || !baseQuote?.success || baseQuote.data.kind !== "repair" ||
+        policy.data.floorPrice.amountMinor > baseQuote.data.total.amountMinor || policy.data.floorPrice.amountMinor > quote.total.amountMinor ||
+        (policy.data.humanApprovalBelow !== null &&
+          (policy.data.humanApprovalBelow.amountMinor < policy.data.floorPrice.amountMinor ||
+            policy.data.humanApprovalBelow.amountMinor > baseQuote.data.total.amountMinor))) return null;
+    return policy.data;
   }
 
   private async lockRFQ(merchantId: string, rfqId: string, session: ClientSession): Promise<void> {
@@ -196,6 +215,7 @@ export class NegotiationStore {
         const now = new Date();
         const context = await loadScopedRFQContext(this.db, merchantId, request.rfqId, session, rfqProcessing);
         const settings = context.data.settings ? settingsSchema.parse(context.data.settings) : null;
+        const repairPolicy = await this.repairPolicy(merchantId, originalQuote, session);
         const timeout = settings?.negotiationTimeoutSeconds ?? 300;
         const deadline = Math.min(Date.parse(request.expiresAt), now.getTime() + timeout * 1000,
           Date.parse(originalQuote.expiresAt), Date.parse(envelope.expiresAt),
@@ -213,14 +233,23 @@ export class NegotiationStore {
         const latest = latestDocuments[0] ? quoteSchema.parse(domain(latestDocuments[0])) : null;
         if (!latest || latest.id !== originalQuote.id || latest.revision !== originalQuote.revision || latest.status !== "offered")
           return ruleFailure("stale_quote");
-        if (!settings?.negotiationEnabled || round > (settings.maxNegotiationRounds ?? 3)) {
+        const maxRounds = Math.min(settings?.maxNegotiationRounds ?? 3, repairPolicy?.maxRounds ?? 5);
+        if (!settings?.negotiationEnabled || round > maxRounds) {
           return ruleFailure(settings?.negotiationEnabled ? "round_limit" : "negotiation_disabled");
         }
         if (await this.db.collection(processingCollection).findOne({ merchantId, rfqId: request.rfqId, status: "pending" }, { session }))
           return ruleFailure("negotiation_pending");
 
+        if (envelope.rfq.humanOfferRequired && originalQuote.kind === "repair" && !repairPolicy)
+          return ruleFailure("negotiation_disabled");
+        if (repairPolicy && request.negotiation.requestedTotal.amountMinor < repairPolicy.floorPrice.amountMinor)
+          return ruleFailure("price_rejected");
+
         const serviceWindow = (rfqProcessing.response as Document | undefined)?.serviceWindow as { startsAt: string; endsAt: string } | undefined;
-        const humanRequired = settings.humanApprovalRequired || !settings.automaticNegotiationEnabled;
+        const thresholdEscalation = repairPolicy?.humanApprovalBelow !== null && repairPolicy?.humanApprovalBelow !== undefined &&
+          request.negotiation.requestedTotal.amountMinor < repairPolicy.humanApprovalBelow.amountMinor;
+        const humanRequired = repairPolicy ? !repairPolicy.automaticNegotiationEnabled || thresholdEscalation :
+          settings.humanApprovalRequired || !settings.automaticNegotiationEnabled;
         const telegramHandle = `ng-${randomBytes(20).toString("hex")}`;
         const record = { contractVersion: "1", merchantId, id: request.negotiation.id, rfqId: request.rfqId,
           buyerId, correlationId: request.correlationId, requestHash, request, originalQuote,
@@ -238,7 +267,7 @@ export class NegotiationStore {
         let priced;
         try {
           priced = priceNegotiatedQuote(context.data, originalQuote, envelope, request.negotiation.requestedTotal, now,
-            originalQuote.revision + 1, { ...(serviceWindow ? { serviceWindow } : {}), expiresAt });
+            originalQuote.revision + 1, { ...(serviceWindow ? { serviceWindow } : {}), expiresAt, ...(repairPolicy ? { repairPolicy } : {}) });
         } catch (error) {
           if (error instanceof NegotiationRuleError) return ruleFailure(error.kind);
           throw error;
@@ -376,8 +405,10 @@ export class NegotiationStore {
       }, { session }))?.response?.serviceWindow;
       try {
         const originalQuote = quoteSchema.parse(domain(record.originalQuote));
+        const repairPolicy = await this.repairPolicy(binding.merchantId, originalQuote, session);
         validateHumanNegotiationPrice(data, originalQuote, envelope, total, new Date(), originalQuote.revision + 1,
-          { ...(window ? { serviceWindow: window } : {}), expiresAt: record.expiresAt });
+          { ...(window ? { serviceWindow: window } : {}), expiresAt: record.expiresAt,
+            ...(repairPolicy ? { repairPolicy } : {}) });
       } catch (error) {
         if (error instanceof NegotiationRuleError) {
           await this.event(session, binding, record.id, updateId, "counter_drafted", total);
@@ -410,6 +441,7 @@ export class NegotiationStore {
       const processing = await this.db.collection(RFQ_PROCESSING_COLLECTION).findOne({ merchantId: binding.merchantId,
         id: record.rfqId }, { session });
       const serviceWindow = processing?.response?.serviceWindow as { startsAt: string; endsAt: string } | undefined;
+      const repairPolicy = await this.repairPolicy(binding.merchantId, originalQuote, session);
       const now = new Date();
       let finalOutcome: Decision;
       let quote: Quote | undefined;
@@ -430,7 +462,8 @@ export class NegotiationStore {
         }
         try {
           const priced = validateHumanNegotiationPrice(context.data, originalQuote, context.envelope, total, now,
-            originalQuote.revision + 1, { ...(serviceWindow ? { serviceWindow } : {}), expiresAt: record.expiresAt });
+            originalQuote.revision + 1, { ...(serviceWindow ? { serviceWindow } : {}), expiresAt: record.expiresAt,
+              ...(repairPolicy ? { repairPolicy } : {}) });
           quote = priced.quote;
         } catch (error) {
           if (error instanceof NegotiationRuleError) throw error;

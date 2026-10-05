@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "mongodb";
 import { z } from "zod";
 import { buyerReceiptSchema, buyerCheckoutSchema, type BuyerReceipt } from "./buyer-types";
-import { bundleOffer, toMinor, type BuyerGoal, type BuyerOffer } from "./buyer-merchant-domain";
+import { bundleOffer, repairOnlyOffer, toMinor, type BuyerGoal, type BuyerOffer } from "./buyer-merchant-domain";
 import type { BuyerMerchantGateway } from "./buyer-merchant-client";
 import { negotiateQuoteRequestSchema, type NegotiationRequest, type NegotiationResponse } from "../merchant/negotiation/contracts";
 import { availabilityResultSchema, commerceTransactionSchema, partsOrderSchema, repairBookingSchema, mockPaymentSchema } from "../merchant/commerce/contracts";
+import type { DamageAssessment } from "../shared/merchant-contracts";
 
 export class BuyerWorkflowError extends Error {}
 type Checkout = z.infer<typeof buyerCheckoutSchema>;
@@ -17,6 +18,9 @@ type RequestDocument = {
   checkout?: Checkout; pendingNegotiation?: PendingNegotiation;
   receipt?: BuyerReceipt; receiptToken?: string; updatedAt: Date;
   operationId?: string; operationUntil?: Date;
+  quoteBatchId?: string;
+  quoteBatchCreatedAt?: string;
+  quoteBatchEvidence?: string;
 };
 const approvalCreatedSchema = z.object({ approvalId: z.string(), transactionId: z.string(), approvalUrl: z.string().url(), expiresAt: z.string(), total: z.number() });
 export const merchantTransactionResultSchema = z.object({
@@ -46,13 +50,20 @@ export class BuyerMerchantWorkflow {
     finally { await requests.updateOne({ _id: id, ownerId: this.ownerId, operationId }, { $unset: { operationId: "", operationUntil: "" } }); }
   }
 
-  async quotes(requestId: string, goal: BuyerGoal) {
+  async quotes(requestId: string, goal: BuyerGoal, assessment?: DamageAssessment) {
     return this.withRequest(requestId, async (current, save) => {
       if (current.status === "completed" || current.checkout || current.pendingNegotiation) {
         throw new BuyerWorkflowError("Өмнөх хэлэлцээ эсвэл захиалгаа дуусгах, эсвэл шинэ хүсэлт үүсгэх шаардлагатай.");
       }
-      const result = await this.gateway.quoteBatch(goal, randomUUID());
-      await save({ goal, quotes: result.quotes, status: "quoted" }, ["selectedQuote", "approval"]);
+      const evidenceFingerprint = assessment ? JSON.stringify(assessment) : "";
+      const reuseBatch = current.goal && JSON.stringify(current.goal) === JSON.stringify(goal) &&
+        current.quoteBatchId && current.quoteBatchEvidence === evidenceFingerprint;
+      const batchId = reuseBatch && current.quoteBatchId ? current.quoteBatchId : randomUUID();
+      const batchCreatedAt = reuseBatch && current.quoteBatchCreatedAt ? current.quoteBatchCreatedAt : new Date().toISOString();
+      await save({ goal, quoteBatchId: batchId, quoteBatchCreatedAt: batchCreatedAt, quoteBatchEvidence: evidenceFingerprint });
+      const result = await this.gateway.quoteBatch(goal, batchId, assessment, new Date(batchCreatedAt));
+      await save({ goal, quoteBatchId: batchId, quoteBatchCreatedAt: batchCreatedAt, quoteBatchEvidence: evidenceFingerprint,
+        quotes: result.quotes, status: "quoted" }, ["selectedQuote", "approval"]);
       return { requestId, ...result, mode: "demo", source: "merchant" };
     });
   }
@@ -61,25 +72,28 @@ export class BuyerMerchantWorkflow {
     return this.withRequest(requestId, async (current, save) => {
       const quote = current.quotes.find(item => item.token === token);
       if (current.status !== "quoted" || !quote?.merchant || current.checkout) throw new BuyerWorkflowError("Merchant санал олдсонгүй. Дахин санал аваарай.");
-      if (quote.merchant.parts.quote.buyerId !== this.gateway.buyerId) throw new BuyerWorkflowError("Buyer identity тохирохгүй байна.");
+        const purchase = quote.merchant, bundled = "parts" in purchase;
+        if (purchase.repair.quote.buyerId !== this.gateway.buyerId ||
+          (bundled && purchase.parts.quote.buyerId !== this.gateway.buyerId)) throw new BuyerWorkflowError("Buyer identity тохирохгүй байна.");
       if (!Number.isSafeInteger(target) || target <= 0 || target >= quote.total) throw new BuyerWorkflowError("Зорилтот үнэ бүхэл төгрөгөөр, одоогийн үнээс бага байна.");
       let pending = current.pendingNegotiation;
       if (pending && (pending.token !== token || pending.target !== target)) throw new BuyerWorkflowError("Өмнөх хэлэлцээний хариуг эхлээд шалгана уу.");
       if (!pending) {
         if (quote.revision !== 1 || quote.expiresAt <= Date.now()) throw new BuyerWorkflowError("Санал хуучирсан эсвэл хэлэлцээ хийгдсэн байна. Дахин санал аваарай.");
-        const partsTarget = Math.max(1, Math.floor(target * quote.parts / quote.total));
-        const repairTarget = target - partsTarget;
-        if (repairTarget < 1) throw new BuyerWorkflowError("Багцын хоёр үнийн зорилт эерэг байх ёстой.");
+        const partsTarget = bundled ? Math.max(1, Math.floor(target * quote.parts / quote.total)) : target;
+        const repairTarget = bundled ? target - partsTarget : target;
+        if (bundled && repairTarget < 1) throw new BuyerWorkflowError("Багцын хоёр үнийн зорилт эерэг байх ёстой.");
         const now = new Date().toISOString();
-        const inputs = [quote.merchant.parts, quote.merchant.repair].map((offer, index) => negotiateQuoteRequestSchema.parse({
+        const offers = bundled ? [purchase.parts, purchase.repair] : [purchase.repair];
+        const inputs = offers.map((offer, index) => negotiateQuoteRequestSchema.parse({
           contractVersion: "1", action: "negotiate_quote", rfqId: offer.quote.rfqId, correlationId: offer.correlationId,
           expiresAt: new Date(quote.expiresAt).toISOString(), negotiation: {
             contractVersion: "1", id: `neg-${randomUUID()}`, merchantId: offer.quote.merchantId, buyerId: this.gateway.buyerId,
             createdAt: now, quoteId: offer.quote.id, quoteRevision: offer.quote.revision,
-            requestedTotal: { amountMinor: toMinor(index === 0 ? partsTarget : repairTarget), currency: "MNT" }, status: "requested",
+            requestedTotal: { amountMinor: toMinor(bundled && index === 0 ? partsTarget : repairTarget), currency: "MNT" }, status: "requested",
           },
         }));
-        pending = { token, target, inputs, results: [null, null] };
+        pending = { token, target, inputs, results: inputs.map(() => null) };
         // IDs are persisted before protocol calls so retries cannot create new rounds.
         await save({ pendingNegotiation: pending, selectedQuote: quote });
       }
@@ -92,22 +106,32 @@ export class BuyerMerchantWorkflow {
       if (pending.results.some(result => result?.outcome === "pending")) {
         return { requestId, quote, pending: true, message: "Merchant хүнээс шийдвэр хүлээж байна. Дараа нь хариуг шалгаарай." };
       }
-      const partsResult = pending.results[0]!, repairResult = pending.results[1]!;
-      const bundle = { ...quote.merchant,
-        parts: { ...quote.merchant.parts, quote: partsResult.quote ?? quote.merchant.parts.quote },
-        repair: { ...quote.merchant.repair, quote: repairResult.quote ?? quote.merchant.repair.quote },
-        booking: { ...quote.merchant.booking, ...(repairResult.serviceWindow ?? {}) },
-      };
-      const names = { [bundle.parts.quote.merchantId]: quote.partsMerchant, [bundle.repair.quote.merchantId]: quote.repairMerchant };
-      const next = bundleOffer(quote.goal, bundle, names, quote.revision + 1);
+      const repairResult = pending.results.at(-1)!;
+      let next: BuyerOffer;
+      if (bundled) {
+        const partsResult = pending.results[0]!;
+        const bundle = { ...purchase,
+          parts: { ...purchase.parts, quote: partsResult.quote ?? purchase.parts.quote },
+          repair: { ...purchase.repair, quote: repairResult.quote ?? purchase.repair.quote },
+          booking: { ...purchase.booking, ...(repairResult.serviceWindow ?? {}) },
+        };
+        const names = { [bundle.parts.quote.merchantId]: quote.partsMerchant, [bundle.repair.quote.merchantId]: quote.repairMerchant };
+        next = bundleOffer(quote.goal, bundle, names, quote.revision + 1);
+      } else {
+        const repair = { ...purchase.repair, quote: repairResult.quote ?? purchase.repair.quote };
+        const booking = { ...purchase.booking, ...(repairResult.serviceWindow ?? {}) };
+        next = repairOnlyOffer(quote.goal, repair, booking, quote.repairMerchant, quote.revision + 1);
+      }
       // Other combinations may reference a superseded merchant revision.
       const previousIds = new Set(pending.results.filter(result => result?.quote).map(result => result!.negotiation.quoteId));
       const quotes = current.quotes.filter(item => item.token !== token).map(item =>
-        item.merchant && [item.merchant.parts.quote.id, item.merchant.repair.quote.id].some(id => previousIds.has(id))
+        item.merchant && [...("parts" in item.merchant ? [item.merchant.parts.quote.id] : []), item.merchant.repair.quote.id]
+          .some(id => previousIds.has(id))
           ? { ...item, expiresAt: 0 } : item);
       quotes.push(next);
       await save({ quotes, selectedQuote: next }, ["pendingNegotiation", "approval"]);
-      return { requestId, quote: next, pending: false, message: `${partsResult.message}\n${repairResult.message}` };
+      return { requestId, quote: next, pending: false,
+        message: bundled ? `${pending.results[0]!.message}\n${repairResult.message}` : repairResult.message };
     });
   }
 
@@ -121,7 +145,9 @@ export class BuyerMerchantWorkflow {
       if (current.status !== "quoted" || !quote?.merchant || current.pendingNegotiation || quote.total !== approvedTotal) {
         throw new BuyerWorkflowError("Батлах Merchant санал олдсонгүй эсвэл хэлэлцээ дуусаагүй байна.");
       }
-      if (quote.merchant.parts.quote.buyerId !== this.gateway.buyerId) throw new BuyerWorkflowError("Buyer identity тохирохгүй байна.");
+        const purchase = quote.merchant, bundled = "parts" in purchase;
+        if (purchase.repair.quote.buyerId !== this.gateway.buyerId ||
+          (bundled && purchase.parts.quote.buyerId !== this.gateway.buyerId)) throw new BuyerWorkflowError("Buyer identity тохирохгүй байна.");
       let checkout = current.checkout;
       if (checkout && (checkout.quoteToken !== token || checkout.approvedTotal !== approvedTotal)) {
         throw new BuyerWorkflowError("Өмнөх зөвшөөрлийн багцыг өөрчилж болохгүй. Шинэ хүсэлт үүсгээрэй.");
@@ -129,13 +155,15 @@ export class BuyerMerchantWorkflow {
       return this.gateway.commerce(async call => {
         if (!checkout) {
           if (quote.expiresAt <= Date.now()) throw new BuyerWorkflowError("Саналын хугацаа дууссан. Дахин санал аваарай.");
-          const selections = [quote.merchant!.parts.quote, quote.merchant!.repair.quote].map(item => ({
+          const purchase = quote.merchant!;
+          const selectedMerchantQuotes = "parts" in purchase ? [purchase.parts.quote, purchase.repair.quote] : [purchase.repair.quote];
+          const selections = selectedMerchantQuotes.map(item => ({
             merchantId: item.merchantId, quoteId: item.id, quoteRevision: item.revision,
           }));
           const available = await call("check_availability", { selections }, availabilityResultSchema);
           if (!available.available || available.total.currency !== "MNT" || available.total.amountMinor !== toMinor(approvedTotal) ||
-              !available.bookingWindows.some(window => window.merchantId === quote.merchant!.booking.merchantId &&
-                window.startsAt === quote.merchant!.booking.startsAt && window.endsAt === quote.merchant!.booking.endsAt)) {
+              !available.bookingWindows.some(window => window.merchantId === purchase.booking.merchantId &&
+                window.startsAt === purchase.booking.startsAt && window.endsAt === purchase.booking.endsAt)) {
             throw new BuyerWorkflowError("Merchant үнэ, үлдэгдэл эсвэл засварын цаг өөрчлөгдсөн. Дахин санал аваарай.");
           }
           checkout = { transactionId: `txn-${randomUUID()}`, quoteToken: token, approvedTotal,
@@ -144,7 +172,7 @@ export class BuyerMerchantWorkflow {
           const approval = await call("request_user_approval", {
             transactionId: checkout.transactionId, selections,
             approvedTotal: { amountMinor: toMinor(approvedTotal), currency: "MNT" },
-            booking: quote.merchant!.booking, expiresAt: checkout.expiresAt,
+            booking: purchase.booking, expiresAt: checkout.expiresAt,
           }, approvalCreatedSchema);
           const url = new URL(approval.approvalUrl);
           if (approval.transactionId !== checkout.transactionId || approval.total !== toMinor(approvedTotal) ||
@@ -181,7 +209,7 @@ export class BuyerMerchantWorkflow {
         const input = { transactionId: checkout.transactionId, approvalId: checkout.approvalId, idempotencyKey: checkout.transactionId };
         if (result.transaction.status !== "confirmed") {
           // The status controls resumable steps; retries keep the same IDs.
-          if (result.transaction.status === "approved") {
+          if (result.transaction.status === "approved" && bundled) {
             await call("create_parts_order", input, z.object({ orders: z.array(partsOrderSchema).min(1) }));
           }
           if (["approved", "reserved"].includes(result.transaction.status)) {
@@ -192,12 +220,13 @@ export class BuyerMerchantWorkflow {
           validateTransaction();
         }
         if (result.transaction.status !== "confirmed" || result.payment?.outcome !== "succeeded" ||
-            result.payment.amount.amountMinor !== toMinor(approvedTotal) || !result.orders.length || !result.bookings.length) {
+          result.payment.amount.amountMinor !== toMinor(approvedTotal) || (bundled && !result.orders.length) || !result.bookings.length) {
           throw new BuyerWorkflowError("Merchant захиалга бүрэн батлагдаагүй байна. Дахин төлөв шалгаарай.");
         }
         const receipt = buyerReceiptSchema.parse({
           id: requestId.toUpperCase(), transactionId: checkout.transactionId,
-          orderId: result.orders.map(order => order.id).join(", "), bookingId: result.bookings.map(booking => booking.id).join(", "),
+          ...(result.orders.length ? { orderId: result.orders.map(order => order.id).join(", ") } : {}),
+          bookingId: result.bookings.map(booking => booking.id).join(", "),
           paymentId: result.payment.id, quote, source: "merchant", mode: "demo", status: "demo_completed",
         });
         await save({ status: "completed", receipt, receiptToken: token, selectedQuote: quote });

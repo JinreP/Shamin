@@ -31,7 +31,15 @@ export function formatRFQNotification(envelope: MerchantRFQEnvelope, full = fals
   const rfq = envelope.rfq;
   const model = /prius|приус/i.test(rfq.vehicle.model) ? `Тоёота Приус ${/30/.test(rfq.vehicle.model) ? "30" : ""}`.trim() : "Автомашины хүсэлт";
   const items = rfq.items.slice(0, full ? 100 : 10).map(item => `${localizeKnownText(item.description, rfq.kind === "parts" ? "Хүссэн сэлбэг" : "Хүссэн засвар").slice(0, full ? 500 : 160)} · ${item.quantity} ширхэг${item.preference ? ` · ${statusLabel(item.preference)}` : ""}${item.partNumber ? ` · Сэлбэгийн дугаар: ${item.partNumber}` : ""}`);
-  return `Шинэ үнийн саналын хүсэлт ирлээ.\n\n${merchantName(rfq.merchantId)}\nМашин: ${model}${rfq.vehicle.year ? ` (${rfq.vehicle.year})` : ""}\n${rfq.kind === "parts" ? "Сэлбэг" : "Засвар"}:\n${items.join("\n")}\n${!full && rfq.items.length > 10 ? `Бусад ${rfq.items.length - 10} мөр байна. Сонгох товчоор хүсэлтийг нээнэ үү.\n` : ""}Хүсэлтийн дугаар: ${rfq.id}\nХариу өгөх хугацаа: ${envelope.expiresAt}${rfq.requiredBy ? `\nШаардлагатай хугацаа: ${rfq.requiredBy}` : ""}\n\nХариу өгөх товчийг дарж, үнийн саналаа монгол кириллээр илгээнэ үү. Үнийг төгрөгөөр бичнэ. Баталгаажуулах хүртэл хүний саналыг нийтлэхгүй. Энэ нь бараа, засварын цаг захиалахгүй.`;
+  const assessment = rfq.kind === "repair" ? rfq.damageAssessment : undefined;
+  const damageItems = assessment?.damageItems.slice(0, full ? 100 : 10).map(item =>
+    `${item.component}${item.description ? ` — ${item.description}` : ""} · Үнэлгээ: ${item.assessmentAmount
+      ? `${item.assessmentAmount.currency} ${(item.assessmentAmount.amountMinor / 100).toLocaleString("mn-MN")}` : "Дүнгүй"}` +
+    `${item.imageRefs.length ? ` · ${item.imageRefs.length} зураг` : ""}`);
+  const evidence = assessment ? `\n\nҮНЭЛГЭЭНИЙ БАРИМТ (Энэ дүн засварын газрын санал биш)\n${damageItems?.join("\n") ?? ""}` +
+    `${assessment.totalAssessmentAmount ? `\nНийт үнэлгээ: ${assessment.totalAssessmentAmount.currency} ${(assessment.totalAssessmentAmount.amountMinor / 100).toLocaleString("mn-MN")}` : ""}` +
+    `${assessment.sourceDocumentRef ? `\nЭх баримтын лавлагаа: ${assessment.sourceDocumentRef.slice(0, 200)}` : ""}\nЭх баримт болон зургийг merchant dashboard-ын хүсэлтийн мэдээллээс шалгана уу.` : "";
+  return `${rfq.kind === "repair" ? "Шинэ засварын RFQ ирлээ." : "Шинэ үнийн саналын хүсэлт ирлээ."}\n\n${merchantName(rfq.merchantId)}\nМашин: ${model}${rfq.vehicle.year ? ` (${rfq.vehicle.year})` : ""}\n${rfq.kind === "parts" ? "Сэлбэг" : "Засвар"}:\n${items.join("\n")}\n${!full && rfq.items.length > 10 ? `Бусад ${rfq.items.length - 10} мөр байна. Сонгох товчоор хүсэлтийг нээнэ үү.\n` : ""}${evidence}\nХүсэлтийн дугаар: ${rfq.id}\nХариу өгөх хугацаа: ${envelope.expiresAt}${rfq.requiredBy ? `\nШаардлагатай хугацаа: ${rfq.requiredBy}` : ""}\n\nХариу өгөх товчийг дарж, үнийн саналаа монгол кириллээр илгээнэ үү. Үнийг төгрөгөөр бичнэ. Баталгаажуулах хүртэл хүний саналыг нийтлэхгүй. Энэ нь бараа, засварын цаг захиалахгүй.`;
 }
 
 /** Telegram's message limit must never hide fields a merchant is about to confirm. */
@@ -110,7 +118,11 @@ export function createTelegramRuntime({ client, db, telegram, ai, config }: Depe
           bindingId: binding.id, chatId });
         if (!notification) throw new TelegramStoreError("Хүсэлт олдсонгүй эсвэл хандах эрхгүй байна.");
         const context = await select(binding, notification.rfqId);
-        await prompt(binding, context.envelope.rfq.id, `${formatRFQNotification(context.envelope, true)}\n\nХүсэлт сонгогдлоо. Үнэ, сэлбэгийн төлөв, боломжийг бичнэ үү. Засвар бол боломжит цагийн дугаарыг бичнэ үү.`);
+        const repairOffer = context.envelope.rfq.kind === "repair" && context.envelope.rfq.humanOfferRequired === true;
+        const responseInstructions = repairOffer
+          ? "Засварын үнийн саналд ажлын хөлс, сэлбэгийн үнэ (сэлбэг санал болгохгүй бол сэлбэг саналгүй гэж бич), захиалагч өөрийн сэлбэг авчрахыг зөвшөөрөх эсэх, хугацаа, боломжит цаг, тайлбарыг бичнэ үү. Мөн зөвхөн худалдаачны дотоод хэлэлцээнд ашиглах доод үнэ, хүний зөвшөөрөх босго (байхгүй бол босгогүй), автомат хэлэлцээ зөвшөөрөх эсэх, 1–5 удаагийн дээд хязгаарыг тодорхой бичнэ үү. Үнэлгээний дүнг өөрийн үнийн санал гэж бүү хуул."
+          : "Хүсэлт сонгогдлоо. Үнэ, сэлбэгийн төлөв, боломжийг бичнэ үү. Засвар бол боломжит цагийн дугаарыг бичнэ үү.";
+        await prompt(binding, context.envelope.rfq.id, `${formatRFQNotification(context.envelope, true)}\n\n${responseInstructions}`);
         if (context.envelope.rfq.kind === "repair") {
           const slots = context.data.slots.filter(slot => slot.status === "available" && Date.parse(slot.startsAt) > Date.now()).slice(0, 10);
           await prompt(binding, context.envelope.rfq.id, slots.length ? `Бүртгэлтэй боломжит цагууд:\n${slots.map(s => `${s.id}\n${s.startsAt} — ${s.endsAt}`).join("\n")}` : "Одоогоор боломжит засварын цаг алга байна.");
@@ -156,14 +168,17 @@ export function createTelegramRuntime({ client, db, telegram, ai, config }: Depe
     const draft = existing ? await store.getDraft(binding, existing.id) : await store.saveDraft(binding, rfqId,
       await extractQuoteDraft(ai, context.envelope.rfq, context.data, text), text, update.update_id);
     const extracted = draft.draft;
-    const missing = missingDraftFields(extracted, context.envelope.rfq.kind);
+    const humanOfferRequired = context.envelope.rfq.kind === "repair" && context.envelope.rfq.humanOfferRequired === true;
+    const missing = missingDraftFields(extracted, context.envelope.rfq.kind, humanOfferRequired);
     const resources = context.envelope.rfq.kind === "parts" ? context.data.inventory : context.data.services;
     const lines = extracted.lines.map(line => {
       const resource = resources.find(r => r.id === line.resourceId);
       return `${localizeKnownText(resource?.name ?? "", "Бараа, үйлчилгээг тодруулна уу.")}\nТоо: ${line.quantity ?? "Тодруулах"} · Үнэ: ${line.unitPrice ? `${line.unitPrice.amountMinor / 100} төгрөг` : "Тодруулах"}${line.condition ? ` · ${statusLabel(line.condition)}` : ""}\nБоломж: ${line.available === true ? "Боломжтой" : line.available === false ? "Боломжгүй" : "Тодруулах"}\nБаталгаа: ${localizeKnownText(resource?.warranty ?? "", "Худалдаачнаас тодруулна уу.")}${resource && "customerPartsTerms" in resource ? `\nЗахиалагчийн сэлбэг: ${localizeKnownText(resource.customerPartsTerms)}` : ""}`;
     });
     const slot = context.data.slots.find(s => s.id === extracted.slotId);
-    const preview = `ХҮНИЙ ҮНИЙН САНАЛЫН НООРОГ\nХүсэлт: ${rfqId}\n${lines.join("\n\n")}${slot ? `\nЗасварын цаг: ${slot.startsAt} — ${slot.endsAt}` : ""}\n\n${missing.length ? `Тодруулах мэдээлэл: ${missing.join(", ")}. Саналаа бүтнээр нь дахин бичнэ үү.` : "Мэдээллээ шалгаад Баталгаажуулах товчийг дарна уу. Сервер бизнесийн дүрэм, бодит боломжийг дахин шалгана."}\nНоорог худалдан авагчид хараахан нийтлэгдээгүй.`;
+    const policy = extracted.repairNegotiationPolicy;
+    const privatePolicy = humanOfferRequired && policy ? `\n\nХУДАЛДААЧНЫ ДОТООД ХЭЛЭЛЦЭЭНИЙ БОДЛОГО\nДоод үнэ: ${policy.floorPrice ? `${policy.floorPrice.amountMinor / 100} төгрөг` : "Тодруулах"}\nХүний зөвшөөрөх босго: ${policy.humanApprovalBelow ? `${policy.humanApprovalBelow.amountMinor / 100} төгрөгөөс доош` : "Тохируулаагүй"}\nАвтомат хэлэлцээ: ${policy.automaticNegotiationEnabled === null ? "Тодруулах" : policy.automaticNegotiationEnabled ? "Зөвшөөрсөн" : "Зөвшөөрөөгүй"}\nДээд оролдлого: ${policy.maxRounds ?? "Тодруулах"}` : "";
+    const preview = `ХҮНИЙ ҮНИЙН САНАЛЫН НООРОГ\nХүсэлт: ${rfqId}\n${lines.join("\n\n")}${slot ? `\nЗасварын цаг: ${slot.startsAt} — ${slot.endsAt}` : ""}${privatePolicy}\n\n${missing.length ? `Тодруулах мэдээлэл: ${missing.join(", ")}. Саналаа бүтнээр нь дахин бичнэ үү.` : "Мэдээллээ шалгаад Баталгаажуулах товчийг дарна уу. Сервер бизнесийн дүрэм, бодит боломжийг дахин шалгана."}\nНоорог худалдан авагчид хараахан нийтлэгдээгүй.`;
     await prompt(binding, draft.rfqId, preview, draft.status === "review" ? callbackButtons(draft, missing.length === 0) : undefined);
   }
   async function processUpdate(input: TelegramUpdate): Promise<void> {

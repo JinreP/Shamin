@@ -12,6 +12,11 @@ export const merchantBundleSchema = z.object({
   repair: merchantOfferSchema,
   booking: bookingTermsSchema,
 });
+export const merchantRepairOnlySchema = z.object({
+  repair: merchantOfferSchema,
+  booking: bookingTermsSchema,
+});
+export const merchantPurchaseSchema = z.union([merchantBundleSchema, merchantRepairOnlySchema]);
 export const buyerCheckoutSchema = z.object({
   transactionId: z.string(),
   quoteToken: z.string().uuid(),
@@ -45,12 +50,12 @@ export const buyerQuoteSchema = z.object({
 
   // Сервер баталсан receipt дотор quote token хэрэггүй.
   token: z.string().optional(),
-  merchant: merchantBundleSchema.optional(),
+  merchant: merchantPurchaseSchema.optional(),
 });
 
 export const buyerReceiptSchema = z.object({
   id: z.string(),
-  orderId: z.string(),
+  orderId: z.string().optional(),
   bookingId: z.string(),
   paymentId: z.string(),
   quote: buyerQuoteSchema,

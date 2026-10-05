@@ -115,7 +115,7 @@ export class MongoRFQStore {
           response = failedResponse(merchantId, envelope);
         }
         const status = response.outcome === "quoted" || response.outcome === "partial" ? "quoted" :
-          response.outcome === "expired" ? "expired" : "declined";
+          response.outcome === "pending" ? "received" : response.outcome === "expired" ? "expired" : "declined";
         const rfq = rfqSchema.parse({ ...envelope.rfq, status });
         const audit = (action: "rfq_received" | "quote_created" | "rfq_processed" | "rfq_failed", entityId: string, outcome: "success" | "failure") =>
           auditEventSchema.parse({ contractVersion: "1", id: `a2a-${hash([merchantId, envelope.rfq.id, action]).slice(0, 48)}`,

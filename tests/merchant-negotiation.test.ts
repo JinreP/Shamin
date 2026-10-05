@@ -176,6 +176,32 @@ test("repair preserves its immutable offered window and rejects unavailable slot
   assert.throws(() => priceNegotiatedQuote(records, quote, input, mnt(145000), now, 2, options), isRule("availability_changed"));
 });
 
+test("repair negotiation preserves parts pricing, enforces the private total floor and publishes consistent estimate totals", () => {
+  const id = "demo-auto-care", records = data(id), input = envelope(id, "repair");
+  const response = calculateMerchantRFQ(id, input, records, now), quote = structuredClone(response.quote!);
+  quote.lines[0].unitPrice = mnt(380000);
+  quote.total = mnt(800000);
+  quote.repairEstimate = { laborPrice: mnt(380000), partsPrice: mnt(420000), totalPrice: mnt(800000),
+    customerSuppliedPartsAccepted: false, estimatedDuration: "2 өдөр" };
+  const repairPolicy = { floorPrice: mnt(700000), humanApprovalBelow: mnt(740000),
+    automaticNegotiationEnabled: true, maxRounds: 3 };
+  const result = priceNegotiatedQuote(records, quote, input, mnt(760000), now, 2,
+    { serviceWindow: response.serviceWindow!, repairPolicy });
+  assert.equal(result.outcome, "accepted", `total=${result.quote.total.amountMinor}`);
+  assert.equal(result.quote.lines.reduce((sum, line) => sum + line.unitPrice.amountMinor * line.quantity, 0), 34000000);
+  assert.equal(result.quote.repairEstimate?.laborPrice.amountMinor, 34000000);
+  assert.equal(result.quote.repairEstimate?.partsPrice?.amountMinor, 42000000);
+  assert.equal(result.quote.repairEstimate?.totalPrice.amountMinor, 76000000);
+  assert.equal(result.quote.total.amountMinor, 76000000);
+  assert.ok(!JSON.stringify(result).includes("floorPrice"));
+  const floorCounter = priceNegotiatedQuote(records, quote, input, mnt(650000), now, 2,
+    { serviceWindow: response.serviceWindow!, repairPolicy });
+  assert.equal(floorCounter.outcome, "countered");
+  assert.equal(floorCounter.quote.total.amountMinor, 70000000);
+  assert.throws(() => validateHumanNegotiationPrice(records, quote, input, mnt(650000), now, 2,
+    { serviceWindow: response.serviceWindow!, repairPolicy }), isRule("price_rejected"));
+});
+
 test("public negotiation errors contain Mongolian explanation and no merchant-private numbers", () => {
   const records = data(), quote = original(records); records.inventory[0].price = mnt(950000); records.inventory[0].minimumPrice = mnt(912345);
   assert.throws(() => priceNegotiatedQuote(records, quote, envelope(), mnt(640000), now, 2), error => error instanceof NegotiationRuleError &&

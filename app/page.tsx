@@ -51,6 +51,7 @@ const draftResponseSchema = z.object({
 
 type Quote = z.infer<typeof quoteSchema>;
 type Receipt = BuyerReceipt;
+type DamageItem = NonNullable<z.infer<typeof repairReportSchema>["damageItems"]>[number];
 
 const sampleReport = [
   "Toyota Prius 30 автомашины оношилгооны тайлан.",
@@ -118,6 +119,24 @@ async function requestJson(
   return data;
 }
 
+async function encodeDamageImage(file: File): Promise<string> {
+  if (!(file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp") || file.size > 8_000_000) {
+    throw new Error("JPEG, PNG эсвэл WebP зураг 8MB-аас бага сонгоно уу.");
+  }
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Зургийг боловсруулах боломжгүй байна.");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const dataUrl = canvas.toDataURL("image/webp", 0.78);
+  if (dataUrl.length > 150000) throw new Error("Зураг шахсаны дараа хэт том байна. Бага хэмжээтэй зураг сонгоно уу.");
+  return dataUrl;
+}
+
 function api(action: string, payload: Record<string, unknown>) {
   return requestJson("/api/buyer", {
     method: "POST",
@@ -136,6 +155,9 @@ function readCurrentTime(): number {
 
 export default function Home() {
   const [report, setReport] = useState("");
+  const [damageImages, setDamageImages] = useState<string[]>([]);
+  const [damageItems, setDamageItems] = useState<DamageItem[]>([]);
+  const [assessmentTotal, setAssessmentTotal] = useState<number | null>(null);
   const [goal, setGoal] = useState<Goal>({ ...initialGoal });
   const [step, setStep] = useState(1);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -322,6 +344,9 @@ export default function Home() {
     setRequestId(null);
     setStep(1);
     setReport("");
+    setDamageImages([]);
+    setDamageItems([]);
+    setAssessmentTotal(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
     setWarnings([]);
@@ -332,6 +357,8 @@ export default function Home() {
 
   function changeReport(value: string) {
     setReport(value);
+    setDamageItems([]);
+    setAssessmentTotal(null);
     setRequestId(null);
     setGoal({ ...initialGoal });
     clearRequestResults();
@@ -402,6 +429,7 @@ export default function Home() {
       },
       body: JSON.stringify({
         report: text,
+        imageRefs: damageImages,
       }),
     });
 
@@ -421,6 +449,8 @@ export default function Home() {
       tasks: result.tasks,
     });
     setWarnings(result.warnings);
+    setDamageItems(result.damageItems ?? []);
+    setAssessmentTotal(result.totalAssessmentAmount ?? null);
 
     setMessage(
       "AI-ийн гаргасан мэдээллийг шалгаад төсөв, хугацаагаа оруулаарай.",
@@ -697,6 +727,8 @@ export default function Home() {
     setApproved(false);
     setTarget(0);
     setWarnings(saved.extracted?.warnings ?? []);
+    setDamageItems(saved.extracted?.damageItems ?? []);
+    setAssessmentTotal(saved.extracted?.totalAssessmentAmount ?? null);
     setExpiredTokens(expired);
     setEvents([]);
     setError("");
@@ -939,6 +971,25 @@ export default function Home() {
               />
             </label>
 
+            <label className="upload">
+              Гэмтлийн зураг хавсаргах (5 хүртэл)
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={disabled}
+                onChange={event => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void run(async () => {
+                    if (files.length > 5) throw new Error("5 хүртэл зураг сонгоно уу.");
+                    const encoded = await Promise.all(files.map(encodeDamageImage));
+                    if (encoded.reduce((total, image) => total + image.length, 0) > 500000)
+                      throw new Error("Зургийн нийт хэмжээ хэтэрсэн байна.");
+                    setDamageImages(encoded);
+                  });
+                }} />
+            </label>
+            {damageImages.length > 0 && <div className="evidence-images" aria-label="Хавсаргасан гэмтлийн зураг">
+              {damageImages.map((image, index) => <img key={index} src={image} alt={`Хавсаргасан гэмтлийн зураг ${index + 1}`} />)}
+            </div>}
+
             <div className="actions">
               <button
                 className="secondary"
@@ -989,6 +1040,18 @@ export default function Home() {
                 </ul>
               </div>
             )}
+
+            {damageItems.length > 0 && <section className="assessment" aria-label="Бүтцэлсэн гэмтлийн үнэлгээ">
+              <h3>Гэмтлийн үнэлгээ</h3>
+              {damageItems.map(item => <article key={item.id}>
+                <strong>{item.component}</strong>
+                {item.description && <p>{item.description}</p>}
+                <p>Үнэлгээ: {item.assessmentAmount === null ? "Дүн тодорхойгүй" : money(item.assessmentAmount)}</p>
+                {item.imageRefs.map((image, index) => <img key={index} src={image} alt={`${item.component} гэмтлийн зураг`} />)}
+              </article>)}
+              <strong>Нийт үнэлгээ: {assessmentTotal === null ? "Тодорхойгүй" : money(assessmentTotal)}</strong>
+              <p>Үнэлгээний дүн нь засварын газрын үнийн санал биш.</p>
+            </section>}
 
             <details>
               <summary>Оруулсан тайлан</summary>
@@ -1107,7 +1170,7 @@ export default function Home() {
               <span>Төсөв: {money(goal.budget)}</span>
             </div>
 
-            {quotes.length === 0 && <section>Тохирох санал олдсонгүй.</section>}
+            {quotes.length === 0 && <section>Одоогоор санал алга. Засварын хүсэлт хүний засварчны үнийн саналыг хүлээж байж болно. Дараа дахин санал шалгана уу.</section>}
 
             <div className="cards">
               {[...quotes]
@@ -1117,23 +1180,25 @@ export default function Home() {
                     <div className="quote-top">
                       <span className="tag">{quote.kind}</span>
 
-                      {index === 0 && (
+                      {index === 0 && quote.merchant && "parts" in quote.merchant && (
                         <span className="tag green">Хамгийн хямд</span>
                       )}
                     </div>
 
-                    <h2>{quote.partsMerchant}</h2>
-                    <p>Засвар: {quote.repairMerchant}</p>
+                    {quote.merchant && "parts" in quote.merchant
+                      ? <><h2>{quote.partsMerchant}</h2><p>Засвар: {quote.repairMerchant}</p></>
+                      : <h2>{quote.repairMerchant}</h2>}
 
                     <dl>
-                      <div>
-                        <dt>{quote.goal.parts}</dt>
-                        <dd>{money(quote.parts)}</dd>
-                      </div>
-                      <div>
-                        <dt>{quote.goal.tasks}</dt>
-                        <dd>{money(quote.labor)}</dd>
-                      </div>
+                      {quote.merchant && !("parts" in quote.merchant) ? <>
+                        <div><dt>Ажлын үнэ</dt><dd>{money(quote.labor)}</dd></div>
+                        <div><dt>Сэлбэгийн үнэ</dt><dd>{quote.merchant.repair.quote.repairEstimate?.partsPrice === null
+                          ? "— · саналд сэлбэг ороогүй" : money(quote.parts)}</dd></div>
+                        <div><dt>Нийт засварын санал</dt><dd>{money(quote.total)}</dd></div>
+                      </> : <>
+                        <div><dt>{quote.goal.parts}</dt><dd>{money(quote.parts)}</dd></div>
+                        <div><dt>{quote.goal.tasks}</dt><dd>{money(quote.labor)}</dd></div>
+                      </>}
                       <div>
                         <dt>Хугацаа</dt>
                         <dd>{quote.days} хоног</dd>
@@ -1143,6 +1208,16 @@ export default function Home() {
                         <dd>{quote.warranty}</dd>
                       </div>
                     </dl>
+
+                    {quote.merchant?.repair.quote.repairEstimate && <div className="notice">
+                      <strong>Засварын хүний санал</strong>
+                      <p>Ажлын үнэ: {money(quote.merchant.repair.quote.repairEstimate.laborPrice.amountMinor / 100)}</p>
+                      <p>Сэлбэгийн үнэ: {quote.merchant.repair.quote.repairEstimate.partsPrice === null
+                        ? "— · саналд сэлбэг ороогүй" : money(quote.merchant.repair.quote.repairEstimate.partsPrice.amountMinor / 100)}</p>
+                      {quote.merchant.repair.quote.repairEstimate.partsPrice === null && <p>Сэлбэгээ өөрөө авчрах боломжтой: {quote.merchant.repair.quote.repairEstimate.customerSuppliedPartsAccepted ? "Тийм" : "Үгүй"}</p>}
+                      {quote.merchant.repair.quote.repairEstimate.estimatedDuration && <p>Засварын хугацаа: {quote.merchant.repair.quote.repairEstimate.estimatedDuration}</p>}
+                      {quote.merchant.repair.quote.repairEstimate.notes && <p>{quote.merchant.repair.quote.repairEstimate.notes}</p>}
+                    </div>}
 
                     <strong className="price">{money(quote.total)}</strong>
 
@@ -1172,7 +1247,7 @@ export default function Home() {
                       disabled={disabled || expiredTokens.includes(quote.token)}
                       onClick={() => selectQuote(quote)}
                     >
-                      Багц сонгох
+                      {quote.merchant && !("parts" in quote.merchant) ? "Засвар сонгох" : "Багц сонгох"}
                     </button>
                   </section>
                 ))}
@@ -1206,9 +1281,8 @@ export default function Home() {
           <section>
             <h2>Сонгосон багц</h2>
 
-            <p>
-              {selected.partsMerchant} + {selected.repairMerchant}
-            </p>
+            <p>{selected.merchant && "parts" in selected.merchant
+              ? `${selected.partsMerchant} + ${selected.repairMerchant}` : selected.repairMerchant}</p>
 
             <div className="summary">
               <div>
@@ -1225,15 +1299,22 @@ export default function Home() {
               </div>
             </div>
 
-            <p>
-              {selected.goal.vehicle}
-              <br />
-              {selected.goal.parts} · {selected.goal.tasks}
-            </p>
+            <p>{selected.goal.vehicle}<br />{selected.merchant && "parts" in selected.merchant
+              ? `${selected.goal.parts} · ${selected.goal.tasks}` : selected.goal.tasks}</p>
 
             <p>
               Нөхцөл: {selected.warranty}
             </p>
+
+            {selected.merchant?.repair.quote.repairEstimate && <div className="notice">
+              <h3>Засварын саналын нөхцөл</h3>
+              <p>Ажлын үнэ: {money(selected.merchant.repair.quote.repairEstimate.laborPrice.amountMinor / 100)}</p>
+              <p>Сэлбэгийн үнэ: {selected.merchant.repair.quote.repairEstimate.partsPrice === null
+                ? "— · сэлбэг саналд ороогүй" : money(selected.merchant.repair.quote.repairEstimate.partsPrice.amountMinor / 100)}</p>
+              {selected.merchant.repair.quote.repairEstimate.partsPrice === null && <p>Сэлбэгээ өөрөө авчрах: {selected.merchant.repair.quote.repairEstimate.customerSuppliedPartsAccepted ? "Зөвшөөрсөн" : "Зөвшөөрөөгүй"}</p>}
+              {selected.merchant.repair.quote.repairEstimate.estimatedDuration && <p>Засварын хугацаа: {selected.merchant.repair.quote.repairEstimate.estimatedDuration}</p>}
+              {selected.merchant.repair.quote.repairEstimate.notes && <p>{selected.merchant.repair.quote.repairEstimate.notes}</p>}
+            </div>}
 
             <p
               className={
@@ -1293,8 +1374,8 @@ export default function Home() {
             {selected.merchant && (
               <div className="notice">
                 <p>Засварын цаг: {selected.merchant.booking.startsAt} → {selected.merchant.booking.endsAt}</p>
-                <details><summary>Сэлбэг, засварын нөхцөл</summary>
-                  <p className="report">{selected.merchant.parts.quote.terms}</p>
+                <details><summary>{"parts" in selected.merchant ? "Сэлбэг, засварын нөхцөл" : "Засварын нөхцөл"}</summary>
+                  {"parts" in selected.merchant && <p className="report">{selected.merchant.parts.quote.terms}</p>}
                   <p className="report">{selected.merchant.repair.quote.terms}</p>
                 </details>
               </div>
@@ -1318,7 +1399,8 @@ export default function Home() {
                 onChange={(event) => setApproved(event.target.checked)}
               />
               {money(selected.total)} үнэтэй, {selected.days} хоногийн
-              хугацаатай энэ багцын demo захиалга, booking, mock төлбөрийг
+              хугацаатай энэ {selected.merchant && "parts" in selected.merchant ? "багцын" : "засварын"}
+              demo захиалга, booking, mock төлбөрийг
               зөвшөөрч байна.
             </label>
 
@@ -1365,24 +1447,26 @@ export default function Home() {
               </div>
               <div>
                 <dt>Сэлбэг</dt>
-                <dd>{receipt.quote.goal.parts}</dd>
+                <dd>{receipt.quote.merchant && !("parts" in receipt.quote.merchant)
+                  ? receipt.quote.merchant.repair.quote.repairEstimate?.partsPrice === null ? "Саналд ороогүй" : "Засварын саналд багтсан"
+                  : receipt.quote.goal.parts}</dd>
               </div>
               <div>
                 <dt>Засварын ажил</dt>
                 <dd>{receipt.quote.goal.tasks}</dd>
               </div>
-              <div>
+              {receipt.quote.merchant && "parts" in receipt.quote.merchant && <div>
                 <dt>Сэлбэгийн дэлгүүр</dt>
                 <dd>{receipt.quote.partsMerchant}</dd>
-              </div>
+              </div>}
               <div>
                 <dt>Засварын газар</dt>
                 <dd>{receipt.quote.repairMerchant}</dd>
               </div>
-              <div>
+              {receipt.orderId && <div>
                 <dt>Захиалга</dt>
                 <dd>{receipt.orderId}</dd>
-              </div>
+              </div>}
               <div>
                 <dt>Booking</dt>
                 <dd>{receipt.bookingId}</dd>

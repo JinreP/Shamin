@@ -10,6 +10,7 @@ const inputSchema = z.object({
     .trim()
     .min(10, "Тайлангийн текст дор хаяж 10 тэмдэгт байна.")
     .max(12000, "Тайлангийн текст 12,000 тэмдэгтээс бага байна."),
+  imageRefs: z.array(z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,/).max(150000)).max(5).optional(),
 });
 
 const geminiResponseSchema = z.object({
@@ -52,8 +53,14 @@ const outputSchema = {
       items: { type: "string" },
       description: "Дутуу, тодорхойгүй эсвэл зөрчилтэй мэдээлэл.",
     },
+    damageItems: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: false,
+      properties: { id: { type: "string" }, component: { type: "string" }, description: { type: ["string", "null"] },
+        assessmentAmount: { type: ["integer", "null"], minimum: 0 }, imageRefs: { type: "array", items: { type: "string" }, maxItems: 5 } },
+      required: ["id", "component", "description", "assessmentAmount", "imageRefs"] } },
+    totalAssessmentAmount: { type: ["integer", "null"], minimum: 0 },
+    notes: { type: ["string", "null"] },
   },
-  required: ["vehicle", "parts", "tasks", "warnings"],
+  required: ["vehicle", "parts", "tasks", "warnings", "damageItems", "totalAssessmentAmount", "notes"],
   additionalProperties: false,
 };
 
@@ -70,6 +77,9 @@ const instructions = `
 - Солих, будах, засах ажлыг тайланд заасан үед л tasks-д оруул.
 - Тодорхойгүй талбарыг "" болго.
 - Төсөв, хугацаа, үнэ, merchant санал үүсгэхгүй.
+- Үнэлгээний тайланд бичсэн дүнг зөвхөн assessmentAmount/totalAssessmentAmount-д хуул; засварын үнийн санал бүү үүсгэ.
+- damageItems-д гэмтсэн эд ангийг тайланд байгаа нэр, тайлбар, үнэлгээний дүнгээр гарга. Тодорхойгүй дүн null байна.
+- imageRefs-г үргэлж хоосон массив, totalAssessmentAmount болон notes-ийг тодорхойгүй бол null болго.
 - Машины марк, загварыг танигдах хэвийн хэлбэрээр бич.
 - Бусад мэдээллийг Монгол хэлээр товч бич.
 - parts болон tasks нь массив биш, таслалаар тусгаарласан string байна.
@@ -140,9 +150,7 @@ export async function POST(request: Request) {
               role: "user",
               parts: [
                 {
-                  text: JSON.stringify({
-                    report: input.data.report,
-                  }),
+                  text: `${JSON.stringify({ report: input.data.report })}\n\nJSON output structure. Include every required field and use null for unknown values:\n${JSON.stringify(outputSchema)}`,
                 },
               ],
             },
@@ -150,7 +158,6 @@ export async function POST(request: Request) {
           generationConfig: {
             temperature: 0,
             responseMimeType: "application/json",
-            responseJsonSchema: outputSchema,
           },
         }),
         signal: AbortSignal.timeout(30000),
@@ -232,10 +239,13 @@ export async function POST(request: Request) {
       );
     }
 
+    const checkedReport = repairReportSchema.parse({ ...result.data,
+      ...(result.data.damageItems ? { damageItems: result.data.damageItems.map((item, index) => ({ ...item,
+        imageRefs: input.data.imageRefs?.[index] ? [input.data.imageRefs[index]] : item.imageRefs })) } : {}) });
     let reportId: string;
 
     try {
-      reportId = await saveBuyerReport(input.data.report, result.data);
+      reportId = await saveBuyerReport(input.data.report, checkedReport);
     } catch {
       return NextResponse.json(
         {
@@ -248,7 +258,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        result: result.data,
+        result: checkedReport,
         reportId,
         requestId: reportId,
       },
