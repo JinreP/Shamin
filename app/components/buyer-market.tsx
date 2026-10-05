@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import BuyerDemoPayment from "./buyer-demo-payment";
 import { z } from "zod";
 import { repairReportSchema } from "@/lib/repair-report";
 import {
@@ -844,6 +845,83 @@ export default function BuyerMarket() {
                   </div>
                 </label>
               ))}
+              <div
+                style={{
+                  marginTop: 24,
+                  paddingTop: 20,
+                  borderTop: "1px solid #e2e8f0",
+                }}
+              >
+                <h3>Бусад лангууны жишээ саналууд</h3>
+                <p style={{ color: "#64748b" }}>
+                  MOCK DATA · Зөвхөн харьцуулж харах туршилтын үнэ.
+                </p>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 14,
+                  }}
+                >
+                  {[
+                    {
+                      name: "Лангуу A — Demo",
+                      bumper: 460000,
+                      headlight: 320000,
+                      condition: "Хуучин",
+                      warranty: "1 сар",
+                    },
+                    {
+                      name: "Лангуу B — Demo",
+                      bumper: 500000,
+                      headlight: 350000,
+                      condition: "Үйлдвэрийн бус шинэ",
+                      warranty: "3 сар",
+                    },
+                    {
+                      name: "Лангуу C — Demo",
+                      bumper: 650000,
+                      headlight: 480000,
+                      condition: "Оригинал шинэ",
+                      warranty: "6 сар",
+                    },
+                  ].map((merchant) => (
+                    <article
+                      key={merchant.name}
+                      style={{
+                        padding: 20,
+                        border: "1px solid #dbe4f0",
+                        borderRadius: 16,
+                        background: "#f8fafc",
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: "#92400e",
+                          background: "#fef3c7",
+                          padding: "4px 8px",
+                          borderRadius: 6,
+                          fontSize: 12,
+                        }}
+                      >
+                        MOCK
+                      </span>
+
+                      <h4 style={{ margin: "14px 0 8px" }}>{merchant.name}</h4>
+
+                      <p>Honda Fit 2014 · {merchant.condition}</p>
+                      <p>Урд бампер: {money(merchant.bumper)}</p>
+                      <p>Зүүн урд гэрэл: {money(merchant.headlight)}</p>
+                      <p>Баталгаа: {merchant.warranty}</p>
+
+                      <strong style={{ fontSize: 22, color: "#254edb" }}>
+                        {money(merchant.bumper + merchant.headlight)}
+                      </strong>
+                    </article>
+                  ))}
+                </div>
+              </div>
 
               {chosen && !bundle && (
                 <p>Үнэ шинэчлэгдсэн. Шинэ багцаа сонгоорой.</p>
@@ -910,6 +988,10 @@ export default function BuyerMarket() {
                 </p>
               )}
             </section>
+          )}
+
+          {search.status === "selected" && (
+            <BuyerDemoPayment key={search.id} searchId={search.id} />
           )}
         </>
       )}

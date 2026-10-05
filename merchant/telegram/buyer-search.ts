@@ -1,4 +1,5 @@
 import "server-only";
+import { TelegramAPIError } from "./api";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db, MongoClient, ClientSession } from "mongodb";
 import { z } from "zod";
@@ -845,6 +846,8 @@ export function createBuyerSearchTelegram({
   async function flush() {
     await ensureSearchIndexes(db);
 
+    const messages = db.collection("buyerSearchMessages");
+
     const searches = await db
       .collection("buyerSearches")
       .find({
@@ -867,7 +870,7 @@ export function createBuyerSearchTelegram({
           .digest("hex")
           .slice(0, 40);
 
-        await db.collection("buyerSearchMessages").updateOne(
+        await messages.updateOne(
           { id },
           {
             $setOnInsert: {
@@ -899,38 +902,58 @@ export function createBuyerSearchTelegram({
       }
     }
 
+    // Өмнөх worker илгээсэн байж болох мессежийг дахин авахгүй.
+    await messages.updateMany(
+      {
+        status: { $in: ["sending", "dispatching"] },
+        leaseUntil: { $lte: new Date() },
+      },
+      {
+        $set: {
+          status: "unknown_delivery",
+          deliveryReason: "worker_interrupted",
+        },
+      },
+    );
+
     for (let index = 0; index < 20; index++) {
       const lease = randomUUID();
       const now = new Date();
 
-      const message = await db
-        .collection("buyerSearchMessages")
-        .findOneAndUpdate(
-          {
-            resolved: { $ne: true },
-            $or: [
-              {
-                status: "queued",
-                nextAttemptAt: { $lte: now },
-              },
-              {
-                status: "sending",
-                leaseUntil: { $lte: now },
-              },
-            ],
-          },
-          {
-            $set: {
-              status: "sending",
-              lease,
-              leaseUntil: new Date(now.getTime() + 120_000),
+      const message = await messages.findOneAndUpdate(
+        {
+          resolved: { $ne: true },
+          $or: [
+            {
+              status: "queued",
+              nextAttemptAt: { $lte: now },
             },
-            $inc: { attempts: 1 },
+            {
+              status: "preparing",
+              leaseUntil: { $lte: now },
+            },
+          ],
+        },
+        {
+          $set: {
+            status: "preparing",
+            lease,
+            leaseUntil: new Date(now.getTime() + 120_000),
           },
-          { returnDocument: "after" },
-        );
+          $inc: { attempts: 1 },
+        },
+        { returnDocument: "after" },
+      );
 
       if (!message) break;
+
+      const scope = { id: message.id, lease };
+
+      const notification =
+        message.purpose === "selected" || message.purpose === "payment";
+
+      let attempted = false;
+      let sent: { message_id: number } | undefined;
 
       try {
         const binding = await db
@@ -946,96 +969,200 @@ export function createBuyerSearchTelegram({
 
         const search = await db.collection("buyerSearches").findOne({
           id: message.searchId,
-          status: message.purpose === "selected" ? "selected" : "searching",
-          ...(message.purpose === "selected"
+          status: notification ? "selected" : "searching",
+          ...(notification
             ? {}
-            : { expiresAt: { $gt: new Date().toISOString() } }),
+            : {
+                expiresAt: {
+                  $gt: new Date().toISOString(),
+                },
+              }),
         });
 
         if (!binding || !search) {
-          await db
-            .collection("buyerSearchMessages")
-            .updateOne(
-              { id: message.id, lease },
-              { $set: { status: "expired", resolved: true } },
-            );
-
-          if (message.purpose === "negotiate") {
-            await db
-              .collection("buyerSearches")
-              .updateOne(
-                { id: message.searchId },
-                { $set: { negotiationPending: false } },
-              );
-          }
+          await messages.updateOne(
+            { ...scope, status: "preparing" },
+            {
+              $set: {
+                status: "expired",
+                resolved: true,
+              },
+            },
+          );
 
           continue;
         }
 
-        const sent = await api.sendMessage(
+        // Lease-ийг эзэмшиж байгаа worker л илгээх эрх авна.
+        const guard = await messages.updateOne(
+          {
+            ...scope,
+            status: "preparing",
+            leaseUntil: { $gt: new Date() },
+          },
+          {
+            $set: {
+              status: "dispatching",
+              leaseUntil: new Date(Date.now() + 120_000),
+            },
+          },
+        );
+
+        if (guard.modifiedCount !== 1) continue;
+
+        attempted = true;
+
+        sent = await api.sendMessage(
           message.chatId,
           message.text.slice(0, 4000),
-          message.purpose === "selected"
+          notification
             ? undefined
             : askButtons(message.id, message.purpose === "negotiate"),
         );
 
-        await db.collection("buyerSearchLinks").updateOne(
-          {
-            bindingId: message.bindingId,
-            chatId: message.chatId,
-            messageId: sent.message_id,
-          },
-          {
-            $setOnInsert: {
-              bindingId: message.bindingId,
-              chatId: message.chatId,
-              messageId: sent.message_id,
-              requestMessageId: message.id,
-            },
-          },
-          { upsert: true },
-        );
+        const telegramMessageId = sent.message_id;
+        let persisted = false;
 
-        await db.collection("buyerSearchMessages").updateOne(
-          { id: message.id, lease },
-          {
-            $set: {
-              status: "sent",
-              messageId: sent.message_id,
-              ...(message.purpose === "selected" ? { resolved: true } : {}),
-            },
-          },
-        );
+        // Хадгалалт алдахад ижил message_id-г дахин хадгална.
+        // Telegram руу дахин sendMessage дуудахгүй.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const session = client.startSession();
 
-        if (message.purpose === "search") {
-          await db.collection("buyerSearches").updateOne(
-            { id: message.searchId },
-            { $set: { "recipients.$[recipient].status": "sent" } },
-            {
-              arrayFilters: [
+          try {
+            await session.withTransaction(async () => {
+              const saved = await messages.updateOne(
+                scope,
                 {
-                  "recipient.merchantId": message.merchantId,
+                  $set: {
+                    status: "sent",
+                    messageId: telegramMessageId,
+                    ...(notification ? { resolved: true } : {}),
+                  },
                 },
-              ],
-            },
-          );
-        }
-      } catch {
-        const delay = Math.min(
-          60_000,
-          2_000 * 2 ** Math.min(message.attempts, 5),
-        );
+                { session },
+              );
 
-        await db.collection("buyerSearchMessages").updateOne(
-          { id: message.id, lease },
-          {
-            $set: {
-              status: "queued",
-              nextAttemptAt: new Date(Date.now() + delay),
+              if (saved.matchedCount !== 1) {
+                throw new Error("Delivery ownership lost");
+              }
+
+              await db.collection("buyerSearchLinks").updateOne(
+                {
+                  bindingId: message.bindingId,
+                  chatId: message.chatId,
+                  messageId: telegramMessageId,
+                },
+                {
+                  $setOnInsert: {
+                    bindingId: message.bindingId,
+                    chatId: message.chatId,
+                    messageId: telegramMessageId,
+                    requestMessageId: message.id,
+                  },
+                },
+                { upsert: true, session },
+              );
+            });
+
+            persisted = true;
+          } catch {
+            if (attempt === 2) {
+              throw new Error("Delivery persistence failed");
+            }
+          } finally {
+            await session.endSession();
+          }
+
+          if (persisted) break;
+        }
+
+        // Энэ нэмэлт update алдахад sent төлөвийг буцаахгүй.
+        if (message.purpose === "search") {
+          await db
+            .collection("buyerSearches")
+            .updateOne(
+              { id: message.searchId },
+              {
+                $set: {
+                  "recipients.$[recipient].status": "sent",
+                },
+              },
+              {
+                arrayFilters: [
+                  {
+                    "recipient.merchantId": message.merchantId,
+                  },
+                ],
+              },
+            )
+            .catch(() => {
+              console.warn(
+                "[Telegram] Recipient status update failed",
+                message.id,
+              );
+            });
+        }
+      } catch (error) {
+        const code = error instanceof TelegramAPIError ? error.code : undefined;
+
+        const rejected =
+          code === "rejected" || code === "unauthorized" || code === "conflict";
+
+        // Илгээж эхлээгүй эсвэл тодорхой 429 авсан үед давтана.
+        const retry = !sent && (!attempted || code === "rate_limit");
+
+        const status = sent
+          ? "sent"
+          : retry
+            ? "queued"
+            : rejected
+              ? "failed"
+              : "unknown_delivery";
+
+        await messages
+          .updateOne(
+            {
+              ...scope,
+              status: { $ne: "sent" },
             },
-          },
-        );
+            {
+              $set: {
+                status,
+
+                ...(sent
+                  ? {
+                      messageId: sent.message_id,
+                      ...(notification ? { resolved: true } : {}),
+                    }
+                  : {}),
+
+                ...(rejected ? { resolved: true } : {}),
+
+                ...(retry
+                  ? {
+                      nextAttemptAt: new Date(
+                        Date.now() +
+                          Math.max(
+                            5_000,
+                            error instanceof TelegramAPIError
+                              ? error.retryAfter * 1000
+                              : 0,
+                          ),
+                      ),
+                    }
+                  : {}),
+
+                deliveryReason: sent
+                  ? "link_persistence_needs_review"
+                  : (code ?? "database_or_network_failure"),
+              },
+            },
+          )
+          .catch(() => {
+            console.error("[Telegram] Delivery state save failed", message.id);
+          });
+
+        console.warn("[Telegram] Delivery", message.id, status);
       }
     }
 

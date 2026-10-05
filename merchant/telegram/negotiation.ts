@@ -8,6 +8,7 @@ import type { TelegramBinding, TelegramUpdate } from "./contracts";
 import type { TelegramConfig } from "./config";
 import { TelegramStoreError } from "./store";
 import { merchantName } from "../i18n";
+import { createDurableTelegram } from "./delivery";
 
 type ResultView = { outcome: "pending" | "accepted" | "countered" | "rejected"; message?: string; quote?: Quote };
 export type NegotiationHumanView = {
@@ -117,8 +118,24 @@ export function createNegotiationTelegram({ store, db, client, api, config, getB
       counterButtons(handle, prepared.updateId));
     return true;
   }
-
+const delivery = createDurableTelegram(
+  db,
+  api,
+  config.botKey,
+);
   async function flush() {
+    await db.collection("merchant_negotiation_processing").updateMany(
+  {
+    notificationStatus: "sending",
+    notificationLeaseUntil: { $lte: new Date() },
+  },
+  {
+    $set: {
+      notificationStatus: "unknown_delivery",
+      notificationReason: "worker_interrupted",
+    },
+  },
+);
     await store.expirePending(20);
     const candidates = await db.collection("merchant_telegram_bindings").find({ mode: config.merchantAuthMode, active: true }).toArray();
     for (const candidate of candidates) {
