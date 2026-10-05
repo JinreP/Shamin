@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
+    "test": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "merchant:db:init": "node --conditions=react-server --import tsx scripts/merchant-db-init.ts",
     "merchant:demo:seed": "node --conditions=react-server --import tsx scripts/merchant-demo-seed.ts",
     "test:merchant:a2a": "node --conditions=react-server --import tsx scripts/merchant-a2a-local-test.ts",

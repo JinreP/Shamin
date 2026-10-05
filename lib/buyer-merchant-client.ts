@@ -6,6 +6,7 @@ import { Client as MCPClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
 import { idSchema } from "../shared/merchant-contracts";
+import { getBusinessType } from "../merchant/business-types";
 import { merchantRFQResponseSchema } from "../merchant/a2a/contracts";
 import { negotiationResponseSchema, type NegotiationRequest } from "../merchant/negotiation/contracts";
 import { buildRFQ, combineOffers, type BuyerGoal } from "./buyer-merchant-domain";
@@ -24,6 +25,7 @@ export interface BuyerMerchantGateway {
 const directorySchema = z.object({
   contractVersion: z.literal("1"), mode: z.literal("simulated"),
   merchants: z.array(z.object({ merchantId: idSchema, name: z.string(), kind: z.enum(["parts", "repair"]),
+    businessType: z.enum(["PARTS_MERCHANT", "REPAIR_SHOP"]).optional(),
     agentCardUrl: z.string().url(), a2aUrl: z.string().url() })).max(20),
 });
 
@@ -94,6 +96,9 @@ export function createBuyerMerchantGateway(source: Record<string, string | undef
         const expected = `${originURL}/api/a2a/${merchant.merchantId}`;
         if (merchant.a2aUrl !== expected || merchant.agentCardUrl !== `${expected}/.well-known/agent-card.json`) {
           throw new BuyerMerchantError("Merchant discovery хаяг тохирохгүй байна.");
+        }
+        if (merchant.businessType && merchant.businessType !== getBusinessType(merchant.kind)) {
+          throw new BuyerMerchantError("Merchant business type mismatch.");
         }
         const envelope = buildRFQ(goal, merchant.merchantId, merchant.kind, buyerId.data, batchId);
         const value = merchantRFQResponseSchema.parse(await send(merchant.merchantId, envelope));

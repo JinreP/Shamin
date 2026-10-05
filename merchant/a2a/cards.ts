@@ -1,5 +1,6 @@
 import "server-only";
 import { AgentCard } from "@a2a-js/sdk";
+import { getBusinessType } from "../business-types";
 import { DEMO_MERCHANTS } from "../demo-merchants";
 
 export const A2A_PROTOCOL_VERSION = "1.0" as const;
@@ -65,7 +66,7 @@ export function getA2AMerchantDirectory(origin: string) {
     mode: "simulated" as const,
     discovery: "public_capabilities_only" as const,
     merchants: DEMO_MERCHANTS.map(merchant => ({
-      merchantId: merchant.id, kind: merchant.kind, name: merchant.name, mode: "simulated" as const,
+      merchantId: merchant.id, kind: merchant.kind, businessType: getBusinessType(merchant.kind), name: merchant.name, mode: "simulated" as const,
       agentCardUrl: `${origin}/api/a2a/${merchant.id}/.well-known/agent-card.json`,
       a2aUrl: `${origin}/api/a2a/${merchant.id}`,
     })),
