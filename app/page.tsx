@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-
+import BuyerMarket from "./components/buyer-market";
 import { repairReportSchema } from "@/lib/repair-report";
 import {
   buyerGoalSchema,
@@ -34,11 +34,13 @@ const negotiationResponseSchema = z.object({
   pending: z.boolean().optional(),
 });
 
-const confirmResponseSchema = z.object({
-  receipt: buyerReceiptSchema.optional(),
-  checkout: buyerCheckoutSchema.optional(),
-  message: z.string().optional(),
-}).refine(value => Boolean(value.receipt) !== Boolean(value.checkout));
+const confirmResponseSchema = z
+  .object({
+    receipt: buyerReceiptSchema.optional(),
+    checkout: buyerCheckoutSchema.optional(),
+    message: z.string().optional(),
+  })
+  .refine((value) => Boolean(value.receipt) !== Boolean(value.checkout));
 
 const parseResponseSchema = z.object({
   result: repairReportSchema,
@@ -153,7 +155,7 @@ function readCurrentTime(): number {
   return Date.now();
 }
 
-export default function Home() {
+export function LegacyBuyer() {
   const [report, setReport] = useState("");
   const [damageImages, setDamageImages] = useState<string[]>([]);
   const [damageItems, setDamageItems] = useState<DamageItem[]>([]);
@@ -168,7 +170,9 @@ export default function Home() {
 
   const [target, setTarget] = useState(0);
   const [approved, setApproved] = useState(false);
-  const [checkout, setCheckout] = useState<z.infer<typeof buyerCheckoutSchema> | null>(null);
+  const [checkout, setCheckout] = useState<z.infer<
+    typeof buyerCheckoutSchema
+  > | null>(null);
   const [pendingTarget, setPendingTarget] = useState<number | null>(null);
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -742,14 +746,17 @@ export default function Home() {
 
       if (
         selectedQuote &&
-        (selectedQuote.expiresAt > now || saved.checkout || saved.pendingTarget !== undefined) &&
+        (selectedQuote.expiresAt > now ||
+          saved.checkout ||
+          saved.pendingTarget !== undefined) &&
         saved.quotes.some((quote) => quote.token === selectedQuote.token)
       ) {
         setSelected(selectedQuote);
         setTarget(
           Math.max(
             1,
-            saved.pendingTarget ?? Math.min(restoredGoal.budget, selectedQuote.total - 10000),
+            saved.pendingTarget ??
+              Math.min(restoredGoal.budget, selectedQuote.total - 10000),
           ),
         );
         setStep(4);
@@ -878,7 +885,9 @@ export default function Home() {
         </header>
 
         <p className="notice">
-          Тайланг Gemini боловсруулна. Buyer нь Merchant агентуудаас A2A-аар санал авч, MCP-аар туршилтын захиалга, засварын цаг бүртгэнэ. Төлбөр mock хэвээр.
+          Тайланг Gemini боловсруулна. Buyer нь Merchant агентуудаас A2A-аар
+          санал авч, MCP-аар туршилтын захиалга, засварын цаг бүртгэнэ. Төлбөр
+          mock хэвээр.
         </p>
 
         {requestId && (
@@ -1302,9 +1311,7 @@ export default function Home() {
             <p>{selected.goal.vehicle}<br />{selected.merchant && "parts" in selected.merchant
               ? `${selected.goal.parts} · ${selected.goal.tasks}` : selected.goal.tasks}</p>
 
-            <p>
-              Нөхцөл: {selected.warranty}
-            </p>
+            <p>Нөхцөл: {selected.warranty}</p>
 
             {selected.merchant?.repair.quote.repairEstimate && <div className="notice">
               <h3>Засварын саналын нөхцөл</h3>
@@ -1343,7 +1350,13 @@ export default function Home() {
 
             <button
               className="secondary"
-              disabled={disabled || !goalValid || !requestId || checkout !== null || pendingTarget !== null}
+              disabled={
+                disabled ||
+                !goalValid ||
+                !requestId ||
+                checkout !== null ||
+                pendingTarget !== null
+              }
               onClick={() => void run(reloadRequestQuotes, true)}
             >
               Дахин санал авах
@@ -1354,7 +1367,9 @@ export default function Home() {
                 <label>
                   Тохиролцох зорилтот үнэ
                   <input
-                    disabled={disabled || selectedExpired || pendingTarget !== null}
+                    disabled={
+                      disabled || selectedExpired || pendingTarget !== null
+                    }
                     type="number"
                     min="1"
                     value={target === 0 ? "" : target}
@@ -1366,26 +1381,44 @@ export default function Home() {
                   disabled={disabled || !targetValid}
                   onClick={() => void run(negotiate, true)}
                 >
-                  {pendingTarget !== null ? "Хэлэлцээний хариу шалгах" : "Үнэ тохиролцох"}
+                  {pendingTarget !== null
+                    ? "Хэлэлцээний хариу шалгах"
+                    : "Үнэ тохиролцох"}
                 </button>
               </div>
             )}
 
             {selected.merchant && (
               <div className="notice">
-                <p>Засварын цаг: {selected.merchant.booking.startsAt} → {selected.merchant.booking.endsAt}</p>
-                <details><summary>{"parts" in selected.merchant ? "Сэлбэг, засварын нөхцөл" : "Засварын нөхцөл"}</summary>
-                  {"parts" in selected.merchant && <p className="report">{selected.merchant.parts.quote.terms}</p>}
-                  <p className="report">{selected.merchant.repair.quote.terms}</p>
+                <p>
+                  Засварын цаг: {selected.merchant.booking.startsAt} →{" "}
+                  {selected.merchant.booking.endsAt}
+                </p>
+                <details>
+                  <summary>{"parts" in selected.merchant ? "Сэлбэг, засварын нөхцөл" : "Засварын нөхцөл"}</summary>
+                  {"parts" in selected.merchant && <p className="report">
+                    {selected.merchant.parts.quote.terms}
+                  </p>}
+                  <p className="report">
+                    {selected.merchant.repair.quote.terms}
+                  </p>
                 </details>
               </div>
             )}
             {checkout && (
               <div className="notice">
                 <p>Захиалгын дугаар: {checkout.transactionId}</p>
-                <p>Merchant хуудсыг нээж Зөвшөөрөх товчийг дарсны дараа энд үргэлжлүүлнэ.</p>
+                <p>
+                  Merchant хуудсыг нээж Зөвшөөрөх товчийг дарсны дараа энд
+                  үргэлжлүүлнэ.
+                </p>
                 {checkout.approvalUrl && (
-                  <a className="secondary" href={checkout.approvalUrl} target="_blank" rel="noopener noreferrer">
+                  <a
+                    className="secondary"
+                    href={checkout.approvalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     Merchant зөвшөөрлийн хуудас нээх ↗
                   </a>
                 )}
@@ -1394,7 +1427,11 @@ export default function Home() {
             <label className="approval">
               <input
                 type="checkbox"
-                disabled={disabled || (selectedExpired && !checkout) || pendingTarget !== null}
+                disabled={
+                  disabled ||
+                  (selectedExpired && !checkout) ||
+                  pendingTarget !== null
+                }
                 checked={approved && (!selectedExpired || checkout !== null)}
                 onChange={(event) => setApproved(event.target.checked)}
               />
@@ -1419,10 +1456,16 @@ export default function Home() {
               </button>
 
               <button
-                disabled={disabled || pendingTarget !== null || (!checkout && (!approved || selectedExpired))}
+                disabled={
+                  disabled ||
+                  pendingTarget !== null ||
+                  (!checkout && (!approved || selectedExpired))
+                }
                 onClick={() => void run(confirm, true)}
               >
-                {checkout ? "Зөвшөөрөл шалгаад захиалга үргэлжлүүлэх" : "Confirm — Зөвшөөрлийн холбоос авах"}
+                {checkout
+                  ? "Зөвшөөрөл шалгаад захиалга үргэлжлүүлэх"
+                  : "Confirm — Зөвшөөрлийн холбоос авах"}
               </button>
             </div>
           </section>
@@ -1432,7 +1475,11 @@ export default function Home() {
           <section>
             <span className="tag green">DEMO COMPLETED</span>
             <h2>Туршилтын баримт бэлэн боллоо</h2>
-            <p>{receipt.source === "merchant" ? "Merchant MongoDB-д туршилтын захиалга, booking бүртгэгдсэн. Төлбөр нь mock." : "Хуучин demo баримт. Merchant захиалгатай холбогдоогүй."}</p>
+            <p>
+              {receipt.source === "merchant"
+                ? "Merchant MongoDB-д туршилтын захиалга, booking бүртгэгдсэн. Төлбөр нь mock."
+                : "Хуучин demo баримт. Merchant захиалгатай холбогдоогүй."}
+            </p>
 
             <strong className="price">{money(receipt.quote.total)}</strong>
 
@@ -1503,5 +1550,34 @@ export default function Home() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <>
+      <BuyerMarket />
+
+      <details
+        style={{
+          maxWidth: 1180,
+          margin: "0 auto 32px",
+          padding: "16px 24px",
+          color: "#17243b",
+        }}
+      >
+        <summary
+          style={{
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 600,
+          }}
+        >
+          Өмнөх Prius demo — захиалга, баримт, түүх
+        </summary>
+
+        <LegacyBuyer />
+      </details>
+    </>
   );
 }

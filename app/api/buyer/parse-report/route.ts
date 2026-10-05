@@ -2,16 +2,49 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { repairReportSchema } from "@/lib/repair-report";
 import { saveBuyerReport } from "@/lib/buyer-store";
+
 export const runtime = "nodejs";
 
 const inputSchema = z.object({
   report: z
     .string()
     .trim()
-    .min(10, "Тайлангийн текст дор хаяж 10 тэмдэгт байна.")
-    .max(12000, "Тайлангийн текст 12,000 тэмдэгтээс бага байна."),
+    .max(12000, "Тайлангийн текст 12,000 тэмдэгтээс бага байна.")
+    .default(""),
   imageRefs: z.array(z.string().regex(/^data:image\/(?:png|jpeg|webp);base64,/).max(150000)).max(5).optional(),
 });
+
+type ImageInput = {
+  mimeType: string;
+  data: string;
+};
+
+function imageMime(bytes: Buffer): string | undefined {
+  if (
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  ) {
+    return "image/png";
+  }
+
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 255 &&
+    bytes[1] === 216 &&
+    bytes[2] === 255
+  ) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    bytes.toString("ascii", 0, 4) === "RIFF" &&
+    bytes.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  return undefined;
+}
 
 const geminiResponseSchema = z.object({
   candidates: z
@@ -86,24 +119,61 @@ const instructions = `
 - Дутуу эсвэл зөрчилтэй мэдээллийг warnings-д тайлбарла.
 - Засварын тайлан биш бол vehicle, parts, tasks-ийг хоосон
   болгож warnings-д шалтгааныг бич.
-
-Demo-д зориулсан нэршил:
-Хэрэв тайланд Toyota Prius 30, урд бампер, зүүн урд гэрлийг
-солих ба бампер будах гэж ил тод бичсэн бол:
-vehicle: "Toyota Prius 30"
-parts: "Урд бампер, зүүн урд гэрэл"
-tasks: "Солих, бампер будах"
-Бусад тайланд энэ мэдээллийг хуулж ашиглахгүй.
+- Ямар ч марк, загварын машины тайлан байж болно.
+- Зураг хавсаргасан бол түүн дээрх оношлогооны бичвэрийг унш.
+- Зургийн бичвэр бүдэг бол таахгүй, warnings-д тод зураг эсвэл мэдээлэл хүс.
+- Машины гадна зурагнаас дотоод гэмтэл, солих шаардлагыг таахгүй.
+- warnings хамгийн ихдээ 10, warning бүр 500 тэмдэгтээс бага байна.
+- vehicle хамгийн ихдээ 200, parts/tasks тус бүр 2000 тэмдэгт байна.
 `;
 
 export async function POST(request: Request) {
   let body: unknown;
+  let image: ImageInput | undefined;
 
   try {
-    body = await request.json();
+    if (request.headers.get("content-type")?.includes("multipart/form-data")) {
+      const form = await request.formData();
+      body = { report: form.get("report") ?? "" };
+
+      const upload = form.get("image");
+
+      if (upload !== null) {
+        if (!(upload instanceof File) || upload.size === 0) {
+          return NextResponse.json(
+            { error: "Оношлогооны зургаа сонгоно уу." },
+            { status: 400 },
+          );
+        }
+
+        if (upload.size > 8 * 1024 * 1024) {
+          return NextResponse.json(
+            { error: "Зураг 8 MB-аас бага байна." },
+            { status: 413 },
+          );
+        }
+
+        const bytes = Buffer.from(await upload.arrayBuffer());
+        const mimeType = imageMime(bytes);
+
+        if (!mimeType) {
+          return NextResponse.json(
+            { error: "JPG, PNG эсвэл WebP зураг оруулна уу." },
+            { status: 415 },
+          );
+        }
+
+        image = {
+          mimeType,
+          data: bytes.toString("base64"),
+        };
+      }
+    } else {
+      body = await request.json();
+    }
   } catch {
     return NextResponse.json(
-      { error: "Хүсэлтийн JSON буруу байна." },
+      { error: "Хүсэлтийн өгөгдлийг уншиж чадсангүй." },
       { status: 400 },
     );
   }
@@ -115,6 +185,16 @@ export async function POST(request: Request) {
       {
         error:
           input.error.issues[0]?.message || "Тайлангийн текстээ шалгана уу.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if (!image && input.data.report.length < 10) {
+    return NextResponse.json(
+      {
+        error:
+          "Оношлогооны зураг эсвэл дор хаяж 10 тэмдэгттэй тайлан оруулна уу.",
       },
       { status: 400 },
     );
@@ -152,6 +232,7 @@ export async function POST(request: Request) {
                 {
                   text: `${JSON.stringify({ report: input.data.report })}\n\nJSON output structure. Include every required field and use null for unknown values:\n${JSON.stringify(outputSchema)}`,
                 },
+                ...(image ? [{ inlineData: image }] : []),
               ],
             },
           ],
@@ -160,13 +241,12 @@ export async function POST(request: Request) {
             responseMimeType: "application/json",
           },
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(30_000),
         cache: "no-store",
       },
     );
 
     if (!response.ok) {
-      // API key болон тайланг log-д гаргахгүй.
       const detail: unknown = await response.json().catch(() => null);
 
       const parsedError = z
@@ -184,14 +264,13 @@ export async function POST(request: Request) {
           ? parsedError.data.error.message.split(apiKey).join("[REDACTED]")
           : "Алдааны дэлгэрэнгүй ирсэнгүй.",
       });
+
       const error =
         response.status === 429
           ? "Gemini-ийн хүсэлтийн хязгаарт хүрлээ. Түр хүлээгээд дахин оролдоорой."
           : response.status === 404
             ? "Gemini model олдсонгүй. GEMINI_MODEL тохиргоогоо шалгаарай."
-            : response.status === 400 ||
-                response.status === 401 ||
-                response.status === 403
+            : [400, 401, 403].includes(response.status)
               ? "Gemini key, model эсвэл API тохиргоогоо шалгаарай."
               : "Gemini үйлчилгээ хүсэлтийг боловсруулж чадсангүй.";
 
@@ -245,7 +324,16 @@ export async function POST(request: Request) {
     let reportId: string;
 
     try {
-      reportId = await saveBuyerReport(input.data.report, checkedReport);
+      const report =
+        input.data.report ||
+        [
+          "Оношлогооны зургаас AI-ийн ялгасан мэдээлэл:",
+          `Машин: ${checkedReport.vehicle}`,
+          `Сэлбэг: ${checkedReport.parts}`,
+          `Ажил: ${checkedReport.tasks}`,
+        ].join("\n");
+
+      reportId = await saveBuyerReport(report, checkedReport);
     } catch {
       return NextResponse.json(
         {
@@ -262,11 +350,7 @@ export async function POST(request: Request) {
         reportId,
         requestId: reportId,
       },
-      {
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      },
+      { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
     const timeout =
