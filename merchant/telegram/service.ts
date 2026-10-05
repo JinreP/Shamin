@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Db, MongoClient } from "mongodb";
 import { auditEventSchema, idSchema } from "../../shared/merchant-contracts";
 import { createBuyerSearchTelegram } from "./buyer-search";
+import { createDurableTelegram } from "./delivery";
 import {
   merchantRFQEnvelopeSchema,
   type MerchantRFQEnvelope,
