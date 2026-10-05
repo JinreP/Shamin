@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BUSINESS_TYPES, getBusinessType } from "../merchant/business-types";
 
 export const CONTRACT_VERSION = "1" as const;
 export const idSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
@@ -12,9 +13,11 @@ const base = { contractVersion: z.literal(CONTRACT_VERSION), id: idSchema,
 const mode = z.enum(["simulated", "live"]);
 export const merchantProfileSchema = z.strictObject({ ...base,
   name: z.string().min(1).max(200), kind: z.enum(["parts", "repair"]),
+  businessType: z.enum([BUSINESS_TYPES.PARTS_MERCHANT, BUSINESS_TYPES.REPAIR_SHOP]).optional(),
   mode, capabilities: z.array(z.string().min(1).max(200)).min(1),
   location: z.string().min(1).max(500), active: z.boolean(),
-}).refine(v => v.id === v.merchantId, "Profile id must equal merchantId");
+}).refine(v => v.id === v.merchantId, "Profile id must equal merchantId")
+  .refine(v => !v.businessType || v.businessType === getBusinessType(v.kind), "Business type must match the merchant kind");
 export const rfqSchema = z.strictObject({ ...base, buyerId: idSchema,
   kind: z.enum(["parts", "repair"]), vehicle: z.strictObject({
     make: z.string().min(1), model: z.string().min(1), year: z.number().int().min(1886).max(2100).optional(),

@@ -7,6 +7,7 @@ import { adminSchemas, type AdminResource, type AdminRecord, type Versioned, typ
 import { assertMerchantScope } from "./repository";
 import { assertDemoMerchant, MerchantAccessError } from "./demo-auth";
 import { fieldLabels, localizeKnownText, localizedAdminFields, merchantName } from "../i18n";
+import { getBusinessType, getMerchantKind, normalizeMerchantBusinessType } from "../business-types";
 import { CommerceStore } from "../commerce/store";
 
 export const adminCollections = { profile: "merchant_profiles", inventory: "merchant_inventory",
@@ -18,16 +19,19 @@ function versioned<K extends AdminResource>(resource: K, document: Document): Ve
   void _id;
   return { record: adminSchemas[resource].parse(record) as AdminRecord<K>, version: z.number().int().positive().parse(_version ?? 1) };
 }
-export function publicProfile(document: Document): MerchantProfile {
+export function publicProfile(document: Document): MerchantProfile & { businessType: "PARTS_MERCHANT" | "REPAIR_SHOP" } {
   // Explicit allowlist: even corrupted profile documents cannot publish private data.
   const { contractVersion, id, merchantId, createdAt, name, kind, mode, capabilities, location, active } = document;
   const profile = merchantProfileSchema.parse({ contractVersion, id, merchantId, createdAt, name, kind, mode, capabilities, location, active });
-  return { ...profile, name: localizeKnownText(profile.name, merchantName(profile.id)),
+  const businessType = getBusinessType(profile.kind);
+  return { ...profile, businessType, name: localizeKnownText(profile.name, merchantName(profile.id)),
     location: localizeKnownText(profile.location, "Худалдаачны байршил"),
     capabilities: profile.capabilities.map(value => value === "Toyota Prius 30" ? value : localizeKnownText(value, "Худалдаачны үйлчилгээ")) };
 }
-export async function discoverMerchants(db: Db, kind?: "parts" | "repair", capability?: string) {
-  const profiles = await db.collection("merchant_profiles").find({ active: true, ...(kind ? { kind } : {}) }, {
+export async function discoverMerchants(db: Db, kind?: "parts" | "repair", capability?: string, businessType?: string) {
+  const normalizedKind = kind ?? (businessType ? getMerchantKind(businessType) : undefined);
+  const normalizedBusinessType = businessType ? getBusinessType(businessType) : undefined;
+  const profiles = await db.collection("merchant_profiles").find({ active: true, ...(normalizedKind ? { kind: normalizedKind } : {}), ...(normalizedBusinessType ? { kind: getMerchantKind(normalizedBusinessType) } : {}) }, {
     projection: { _id: 0, contractVersion: 1, id: 1, merchantId: 1, createdAt: 1, name: 1, kind: 1, mode: 1, capabilities: 1, location: 1, active: 1 },
   }).sort({ id: 1 }).limit(100).toArray();
   const query = capability?.toLowerCase();
