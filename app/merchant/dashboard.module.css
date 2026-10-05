@@ -37,3 +37,985 @@
 .error { color: #9e2b2b !important; background: #fae5e5; padding: 14px; border-radius: 6px; }
 .success { color: #1b5c3d !important; background: #dcefe0; padding: 14px; border-radius: 6px; }
 @media (max-width: 850px) { .workarea, .activity { grid-template-columns: 1fr; } .metrics { grid-template-columns: 1fr 1fr; } .toolbar { flex-wrap: wrap; } .toolbar label { min-width: 100%; } .header { align-items: start; } }
+
+/* Keep Buyer approval shared styles above unchanged. All merchant overrides are scoped. */
+.merchantRoot {
+  min-width: 0;
+}
+
+.merchantRoot .dashboard {
+  color: #14243d;
+  background: #f3f6fb;
+  width: calc(100% - 250px);
+  min-width: 0;
+  max-width: 1500px;
+  min-height: 100vh;
+  margin: 0 0 0 250px;
+  padding: 40px 48px;
+}
+
+.merchantRoot .dashboard h1 {
+  color: #14243d;
+  margin: 14px 0 12px;
+  font-size: 34px;
+  line-height: 1.3;
+}
+
+.merchantRoot .dashboard h2 {
+  margin: 0 0 12px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.merchantRoot .dashboard h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.merchantRoot .dashboard p {
+  color: #60718a;
+}
+
+.merchantRoot .dashboard button {
+  overflow-wrap: anywhere;
+  background: #2563eb;
+  border-radius: 10px;
+  max-width: 100%;
+  min-height: 44px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.merchantRoot .dashboard input,
+.merchantRoot .dashboard select,
+.merchantRoot .dashboard textarea {
+  color: #14243d;
+  background: #fff;
+  border: 1px solid #ced8e6;
+  border-radius: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 8px 0 0;
+  padding: 12px;
+  line-height: 1.5;
+}
+
+.merchantRoot .dashboard textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+.merchantRoot :is(button,a,summary):focus-visible {
+  outline-offset: 3px;
+  outline: 3px solid #8bb7ff;
+}
+
+.merchantRoot .header {
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.merchantRoot .header>div {
+  min-width: 0;
+}
+
+.merchantRoot .header p {
+  max-width: 620px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.merchantRoot .header a {
+  color: #2563eb;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.merchantRoot .eyebrow {
+  color: #537092;
+  letter-spacing: 2px;
+  font-size: 11px;
+}
+
+.merchantRoot .banner {
+  color: #765820;
+  background: #fff5dc;
+  border: 0;
+  border-radius: 10px;
+  margin: 0 0 24px;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.merchantRoot .sidebarNav {
+  gap: 8px;
+  margin: 36px 0 24px;
+  display: grid;
+}
+
+.merchantRoot .sidebarLink {
+  color: #b4c4db;
+  background: transparent;
+  border-radius: 10px;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-decoration: none;
+  display: flex;
+}
+
+.merchantRoot .sidebarLink:hover {
+  color: #fff;
+  background: #1e304c;
+}
+
+.merchantRoot .sidebarLink span {
+  color: inherit;
+  font: inherit;
+  background: 0 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.merchantRoot .sidebarActive {
+  color: #fff;
+  background: #1e304c;
+}
+
+.merchantRoot>aside p {
+  color: #b4c4db;
+}
+
+.merchantRoot .toolbar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 0 0 24px;
+  display: flex;
+}
+
+.merchantRoot .toolbar label {
+  flex: 260px;
+  max-width: 460px;
+}
+
+.merchantRoot .secondary,
+.merchantRoot .dashboard button:global(.secondary) {
+  color: #24466e;
+  background: #e9eff9 !important;
+}
+
+.merchantRoot .businessSummary {
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  display: flex;
+}
+
+.merchantRoot .businessIdentity {
+  min-width: 0;
+}
+
+.merchantRoot .businessIdentity h2 {
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+}
+
+.merchantRoot .businessIdentity p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.merchantRoot .connectionBadge {
+  color: #315b97;
+  background: #e5edfc;
+  border-radius: 7px;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  display: inline-flex;
+}
+
+.merchantRoot .connectionBadge[data-connected=true] {
+  color: #167449;
+  background: #e2f6eb;
+}
+
+.merchantRoot .statusDot {
+  background: currentColor;
+  border-radius: 50%;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+}
+
+.merchantRoot .summaryActions,
+.merchantRoot .inlineActions {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  display: flex;
+}
+
+.merchantRoot .summaryActions {
+  justify-content: flex-end;
+}
+
+.merchantRoot .metrics {
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 18px;
+  margin: 0 0 24px;
+}
+
+.merchantRoot .metrics>div {
+  background: #fff;
+  border: 1px solid #e1e8f1;
+  border-radius: 16px;
+  min-width: 0;
+  padding: 20px 22px;
+}
+
+.merchantRoot .metrics small {
+  color: #60718a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.merchantRoot .metrics strong {
+  color: #14243d;
+  overflow-wrap: anywhere;
+  margin-top: 8px;
+  font-size: 26px;
+  line-height: 1.4;
+}
+
+.merchantRoot .tabs {
+  gap: 8px;
+  margin: 28px 0 24px;
+}
+
+.merchantRoot .tabs button {
+  padding: 10px 15px;
+  font-size: 13px;
+}
+
+.merchantRoot .selectedTab {
+  color: #245cba;
+  background: #dce8ff !important;
+}
+
+.merchantRoot .workarea {
+  grid-template-columns: minmax(230px,.75fr) minmax(0,1.5fr);
+  gap: 22px;
+}
+
+.merchantRoot .panel,
+.merchantRoot .editor,
+.merchantRoot .login {
+  background: #fff;
+  border: 1px solid #e1e8f1;
+  border-radius: 16px;
+  min-width: 0;
+  padding: 28px;
+}
+
+.merchantRoot .panel p,
+.merchantRoot .editor>p {
+  font-size: 13px;
+}
+
+.merchantRoot .login {
+  max-width: 560px;
+  margin: 32px auto;
+}
+
+.merchantRoot .login label {
+  margin-bottom: 20px;
+}
+
+.merchantRoot .login button {
+  width: 100%;
+}
+
+.merchantRoot .sectionHead,
+.merchantRoot .editorHead {
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 18px;
+  display: flex;
+}
+
+.merchantRoot .sectionHead>div {
+  min-width: 0;
+}
+
+.merchantRoot .sectionHead h2,
+.merchantRoot .editorHead h2 {
+  margin-bottom: 4px;
+}
+
+.merchantRoot .sectionHead p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.merchantRoot .muted,
+.merchantRoot .recordMeta,
+.merchantRoot .recordId {
+  color: #60718a;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.merchantRoot .recordId,
+.merchantRoot .recordMeta {
+  overflow-wrap: anywhere;
+}
+
+.merchantRoot .emptyState,
+.merchantRoot .loadingState {
+  text-align: center;
+  background: #f8faff;
+  border: 1px dashed #ced8e6;
+  border-radius: 12px;
+  padding: 30px 20px;
+}
+
+.merchantRoot .emptyState strong,
+.merchantRoot .loadingState strong {
+  font-size: 15px;
+  line-height: 1.6;
+  display: block;
+}
+
+.merchantRoot .emptyState p,
+.merchantRoot .loadingState p {
+  max-width: 420px;
+  margin: 8px auto 0;
+}
+
+.merchantRoot .requestLayout {
+  grid-template-columns: minmax(250px,.75fr) minmax(0,1.75fr);
+  align-items: start;
+  gap: 22px;
+  display: grid;
+}
+
+.merchantRoot .requestList {
+  min-width: 0;
+  position: sticky;
+  top: 24px;
+}
+
+.merchantRoot .requestDetail {
+  min-width: 0;
+}
+
+.merchantRoot .requestButton,
+.merchantRoot .recordButton {
+  color: #14243d;
+  text-align: left;
+  border: 1px solid #e1e8f1;
+  border-radius: 12px;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 18px;
+  display: block;
+  background: #fff !important;
+}
+
+.merchantRoot .requestButton:hover:not(:disabled),
+.merchantRoot .recordButton:hover:not(:disabled) {
+  filter: none;
+  border-color: #8bb7ff;
+  background: #f8faff !important;
+}
+
+.merchantRoot .requestButton strong {
+  margin-bottom: 7px;
+  font-size: 16px;
+  line-height: 1.5;
+  display: block;
+}
+
+.merchantRoot .requestButton p {
+  color: #435974;
+  margin: 4px 0 10px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.merchantRoot .requestButton small,
+.merchantRoot .recordButton small {
+  color: #60718a;
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  display: block;
+}
+
+.merchantRoot .activeRequest,
+.merchantRoot .selectedRecord {
+  border-color: #8bb7ff;
+  box-shadow: inset 3px 0 #2563eb;
+  background: #f3f7ff !important;
+}
+
+.merchantRoot .requestMeta {
+  color: #60718a;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 12px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  display: flex;
+}
+
+.merchantRoot .requestItems {
+  gap: 10px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+}
+
+.merchantRoot .requestItems>li {
+  background: #f8faff;
+  border: 1px solid #e1e8f1;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.merchantRoot .requestItems strong {
+  font-size: 14px;
+  display: block;
+}
+
+.merchantRoot .requestItems p {
+  margin: 6px 0 0;
+}
+
+.merchantRoot .evidence {
+  background: #f8faff;
+}
+
+.merchantRoot .evidenceGrid {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 14px;
+  margin-top: 20px;
+  display: grid;
+}
+
+.merchantRoot .damageCard {
+  background: #fff;
+  border: 1px solid #e1e8f1;
+  border-radius: 12px;
+  min-width: 0;
+  padding: 18px;
+}
+
+.merchantRoot .damageCard strong {
+  line-height: 1.5;
+  display: block;
+}
+
+.merchantRoot .damageCard p {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.merchantRoot .evidenceImages {
+  grid-template-columns: repeat(auto-fit,minmax(110px,1fr));
+  gap: 10px;
+  margin-top: 14px;
+  display: grid;
+}
+
+.merchantRoot .evidenceImages a {
+  border-radius: 8px;
+  min-width: 0;
+  display: block;
+}
+
+.merchantRoot .evidenceImages img {
+  aspect-ratio: 4/3;
+  object-fit: contain;
+  background: #edf1f7;
+  border: 1px solid #e1e8f1;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.merchantRoot .assessmentAmount {
+  background: #edf1f7;
+  border: 1px solid #e1e8f1;
+  border-radius: 10px;
+  margin: 18px 0;
+  padding: 16px 18px;
+}
+
+.merchantRoot .assessmentAmount small {
+  color: #60718a;
+  font-size: 12px;
+  display: block;
+}
+
+.merchantRoot .assessmentAmount strong {
+  color: #435974;
+  overflow-wrap: anywhere;
+  margin-top: 6px;
+  font-size: 24px;
+  line-height: 1.4;
+  display: block;
+}
+
+.merchantRoot .privateBadge,
+.merchantRoot .statusBadge {
+  color: #435974;
+  background: #edf1f7;
+  border-radius: 7px;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  display: inline-flex;
+}
+
+.merchantRoot .statusBadge {
+  color: #315b97;
+  background: #e5edfc;
+}
+
+.merchantRoot .statusBadge[data-status=quoted],
+.merchantRoot .statusBadge[data-status=approved],
+.merchantRoot .statusBadge[data-status=completed] {
+  color: #167449;
+  background: #e2f6eb;
+}
+
+.merchantRoot .formSection {
+  border-top: 1px solid #e1e8f1;
+  margin: 24px 0;
+  padding-top: 24px;
+}
+
+.merchantRoot .formGrid,
+.merchantRoot .tradeGrid {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 20px;
+  margin: 20px 0;
+  display: grid;
+}
+
+.merchantRoot .formGrid>*,
+.merchantRoot .tradeGrid>*,
+.merchantRoot .editor label {
+  min-width: 0;
+}
+
+.merchantRoot .editor fieldset,
+.merchantRoot .offerCard fieldset {
+  border: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.merchantRoot .editor fieldset>label {
+  margin-bottom: 20px;
+}
+
+.merchantRoot .editor small,
+.merchantRoot .helperText {
+  color: #60718a;
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  display: block;
+}
+
+.merchantRoot .check {
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  margin: 16px 0;
+  line-height: 1.6;
+  display: flex;
+}
+
+.merchantRoot .check input,
+.merchantRoot .choice input {
+  accent-color: #2563eb;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.merchantRoot .choiceGroup {
+  gap: 10px;
+  margin: 12px 0 18px;
+  display: grid;
+}
+
+.merchantRoot .choice {
+  cursor: pointer;
+  background: #f8faff;
+  border: 1px solid #e1e8f1;
+  border-radius: 10px;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 48px;
+  padding: 14px 16px;
+  line-height: 1.6;
+  display: flex;
+}
+
+.merchantRoot .choice:has(input:checked) {
+  background: #f3f7ff;
+  border-color: #8bb7ff;
+}
+
+.merchantRoot .choice input {
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.merchantRoot .moneyField {
+  position: relative;
+}
+
+.merchantRoot .moneyField input {
+  padding-right: 40px;
+}
+
+.merchantRoot .priceSuffix {
+  color: #60718a;
+  pointer-events: none;
+  font-size: 14px;
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+}
+
+.merchantRoot .offerCard {
+  border-top: 3px solid #2563eb;
+}
+
+.merchantRoot .offerPreview {
+  background: #f3f7ff;
+  border: 1px solid #dce8ff;
+  border-radius: 12px;
+  margin-top: 24px;
+  padding: 22px;
+}
+
+.merchantRoot .offerPreview dl {
+  margin: 12px 0;
+}
+
+.merchantRoot .offerPreview dl div {
+  align-items: baseline;
+}
+
+.merchantRoot .offerTotal {
+  color: #14243d;
+  border-top: 1px solid #dce8ff;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 18px 0;
+  padding-top: 18px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+}
+
+.merchantRoot .offerTotal strong {
+  color: #2563eb;
+  overflow-wrap: anywhere;
+  font-size: 29px;
+  line-height: 1.3;
+}
+
+.merchantRoot .offerPreview>button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.merchantRoot .offerSteps {
+  color: #60718a;
+  margin: 14px 0 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.merchantRoot .technicalDetails {
+  color: #60718a;
+  overflow-wrap: anywhere;
+  background: #f4f7fc;
+  margin-top: 16px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.merchantRoot .technicalDetails summary {
+  cursor: pointer;
+  min-height: 24px;
+  font-weight: 600;
+}
+
+.merchantRoot .technicalDetails p {
+  margin: 10px 0 0;
+}
+
+.merchantRoot .vehicle {
+  background: #f8faff;
+  border: 1px solid #e1e8f1;
+  border-radius: 10px;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 18px;
+  margin: 16px 0;
+  padding: 18px;
+}
+
+.merchantRoot .activity {
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 22px;
+}
+
+.merchantRoot .activity article {
+  border-top: 1px solid #e1e8f1;
+  padding: 18px 0;
+}
+
+.merchantRoot .activity article p {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.merchantRoot .error {
+  overflow-wrap: anywhere;
+  background: #fee9e9;
+  border-radius: 10px;
+  padding: 16px;
+  font-size: 13px;
+  color: #ab2929 !important;
+}
+
+.merchantRoot .success {
+  overflow-wrap: anywhere;
+  background: #e2f8ed;
+  border-radius: 10px;
+  padding: 16px;
+  font-size: 13px;
+  color: #187346 !important;
+}
+
+.merchantRoot .telegramPanel {
+  gap: 14px;
+  display: grid;
+}
+
+.merchantRoot .telegramPanel p {
+  margin: 0;
+}
+
+@media (max-width:1100px) {
+  .merchantRoot .dashboard {
+    padding: 30px;
+  }
+  .merchantRoot .metrics {
+    grid-template-columns: repeat(2,minmax(0,1fr));
+  }
+  .merchantRoot .requestLayout,
+  .merchantRoot .workarea {
+    grid-template-columns: minmax(0,1fr);
+  }
+  .merchantRoot .requestList {
+    position: static;
+  }
+  .merchantRoot .businessSummary {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .merchantRoot .summaryActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width:850px) {
+  .merchantRoot .header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .merchantRoot .toolbar label {
+    min-width: 100%;
+    max-width: none;
+  }
+  .merchantRoot .activity,
+  .merchantRoot .formGrid,
+  .merchantRoot .tradeGrid,
+  .merchantRoot .evidenceGrid {
+    grid-template-columns: minmax(0,1fr);
+  }
+}
+
+@media (max-width:700px) {
+  .merchantRoot .dashboard {
+    width: 100%;
+    margin: 0;
+    padding: 22px;
+  }
+  .merchantRoot .dashboard h1 {
+    font-size: 25px;
+  }
+  .merchantRoot .dashboard h2 {
+    font-size: 20px;
+  }
+  .merchantRoot .sidebarNav {
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 18px 0 0;
+    display: flex;
+  }
+  .merchantRoot .sidebarLink {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .merchantRoot .panel,
+  .merchantRoot .editor,
+  .merchantRoot .login {
+    padding: 20px;
+  }
+  .merchantRoot .metrics {
+    gap: 12px;
+  }
+  .merchantRoot .metrics>div {
+    padding: 16px;
+  }
+  .merchantRoot .metrics strong {
+    font-size: 22px;
+  }
+  .merchantRoot .tabs {
+    gap: 6px;
+    margin: 22px 0;
+  }
+  .merchantRoot .tabs button {
+    flex: auto;
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .merchantRoot .sectionHead,
+  .merchantRoot .editorHead {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .merchantRoot .vehicle {
+    grid-template-columns: minmax(0,1fr);
+  }
+  .merchantRoot .requestLayout,
+  .merchantRoot .workarea,
+  .merchantRoot .businessSummary {
+    gap: 18px;
+  }
+  .merchantRoot .summaryActions,
+  .merchantRoot .inlineActions {
+    width: 100%;
+  }
+  .merchantRoot .summaryActions button,
+  .merchantRoot .inlineActions button {
+    flex: 130px;
+  }
+  .merchantRoot .offerPreview {
+    padding: 18px;
+  }
+  .merchantRoot .offerPreview dl div {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .merchantRoot .offerPreview dd {
+    text-align: left;
+    max-width: 100%;
+  }
+  .merchantRoot .offerTotal strong {
+    font-size: 26px;
+  }
+}
+
+@media (prefers-reduced-motion:no-preference) {
+  .merchantRoot .sidebarLink,
+  .merchantRoot .requestButton,
+  .merchantRoot .recordButton {
+    transition: background-color .14s,border-color .14s;
+  }
+}
+
+/* Vehicle details and responsive containment stay inside the merchant shell. */
+.merchantRoot .requestLayout > *,
+.merchantRoot .sectionHead > *,
+.merchantRoot .offerCard {
+  min-width: 0;
+}
+
+.merchantRoot .requestDetail,
+.merchantRoot .damageCard,
+.merchantRoot .privateBadge,
+.merchantRoot .statusBadge {
+  overflow-wrap: anywhere;
+}
+
+.merchantRoot .evidenceImages {
+  grid-template-columns: repeat(auto-fit, minmax(min(110px, 100%), 1fr));
+}
+
+.merchantRoot .vehicleInfo {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+  margin: 18px 0;
+}
+
+.merchantRoot .vehicleInfo > div {
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.merchantRoot .vehicleInfo dd {
+  text-align: left;
+  color: #14243d;
+  font-weight: 600;
+}
+
+@media (max-width: 850px) {
+  .merchantRoot .vehicleInfo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
