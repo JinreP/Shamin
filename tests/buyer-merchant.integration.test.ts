@@ -6,6 +6,8 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { createBuyerMerchantGateway } from "../lib/buyer-merchant-client";
 import { BuyerMerchantWorkflow, BuyerWorkflowError } from "../lib/buyer-merchant-workflow";
 import { authenticateA2A } from "../merchant/a2a/auth";
+import { calculateMerchantRFQ } from "../merchant/a2a/engine";
+import { loadScopedRFQContext } from "../merchant/a2a/data";
 import { getA2AMerchantDirectory, merchantAgentCardJSON } from "../merchant/a2a/cards";
 import { handleMerchantA2A } from "../merchant/a2a/transport";
 import { createMerchantRFQProcessor } from "../merchant/a2a/service";
@@ -13,12 +15,13 @@ import { handleCommerceMCP } from "../merchant/commerce/mcp";
 import { CommerceStore } from "../merchant/commerce/store";
 import { seedDemoMerchants } from "../merchant/server/seed";
 import { closeMerchantConnection } from "../merchant/server/database";
+import { quoteSchema } from "../shared/merchant-contracts";
 
 test("Buyer uses official A2A/MCP SDKs with persisted request ownership and explicit approval", {
   skip: process.env.BUYER_MERCHANT_LOCAL_INTEGRATION !== "true", timeout: 180_000,
 }, async t => {
   // Created by this test only: never uses a shared URI or loads .env.local.
-  const replica = await MongoMemoryReplSet.create({ instanceOpts: [{ args: ["--nounixsocket"] }], replSet: { count: 1, storageEngine: "wiredTiger", ip: "127.0.0.1" } });
+  const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger", ip: "127.0.0.1" } });
   const client = await new MongoClient(replica.getUri()).connect();
   const db = client.db("buyer_merchant_disposable");
   const oldEnv = { ...process.env };
@@ -124,6 +127,87 @@ test("Buyer uses official A2A/MCP SDKs with persisted request ownership and expl
       assert.deepEqual(after?.pendingNegotiation.inputs, before?.pendingNegotiation.inputs);
       await assert.rejects(() => workflow.negotiate(pendingId, offer.token, target - 1), BuyerWorkflowError);
       await assert.rejects(() => workflow.confirm(pendingId, offer.token, offer.total), BuyerWorkflowError);
+    });
+
+    await t.test("assessment routes only to repair shops and completes a standalone human repair booking", async () => {
+      const repairRequestId = await draft();
+      const assessment = { sourceDocumentRef: "assessment-doc-1", sourceDocument: "Toyota Prius 30 damage report",
+        damageItems: [{ id: "damage-bumper", component: "Урд гупер", description: "Хагарсан",
+          assessmentAmount: { amountMinor: 45000000, currency: "MNT" }, imageRefs: ["data:image/png;base64,aGVsbG8="] }],
+        totalAssessmentAmount: { amountMinor: 45000000, currency: "MNT" }, notes: "Ослын үнэлгээ" };
+      const initial = await workflow.quotes(repairRequestId, goal, assessment);
+      assert.equal(initial.quotes.length, 0);
+      const buyerRequest = await db.collection<Document & { _id: string }>("repairRequests").findOne({ _id: repairRequestId });
+      assert.ok(buyerRequest?.quoteBatchId);
+      const repairIds = ["demo-auto-care", "demo-quick-garage"];
+      const repairRFQs = await db.collection("merchant_rfq_processing").find({
+        merchantId: { $in: repairIds }, id: { $in: repairIds.map(id => `rfq-${buyerRequest!.quoteBatchId}-${id}`) },
+      }).toArray();
+      assert.equal(repairRFQs.length, 2);
+      assert.ok(repairRFQs.every(record => record.envelope.rfq.kind === "repair" &&
+        record.envelope.rfq.damageAssessment.damageItems[0].assessmentAmount.amountMinor === 45000000 &&
+        record.envelope.rfq.damageAssessment.damageItems[0].imageRefs.length === 1));
+      assert.equal(await db.collection("merchant_rfq_processing").countDocuments({
+        id: { $regex: `^rfq-${buyerRequest.quoteBatchId}-` }, merchantId: { $in: ["demo-prius-parts", "demo-japan-used", "demo-oem-center"] },
+      }), 0);
+
+      for (const merchantId of repairIds) {
+        const rfqId = `rfq-${buyerRequest.quoteBatchId}-${merchantId}`;
+        const session = client.startSession();
+        let context;
+        try {
+          context = await session.withTransaction(() => loadScopedRFQContext(db, merchantId, rfqId, session));
+        } finally { await session.endSession(); }
+        assert.ok(context);
+        const automatic = calculateMerchantRFQ(merchantId, { ...context.envelope,
+          rfq: { ...context.envelope.rfq, humanOfferRequired: false } }, context.data, new Date(context.envelope.rfq.createdAt));
+        assert.ok(automatic.quote && automatic.serviceWindow);
+        const repairEstimate = { laborPrice: automatic.quote.total, partsPrice: null, totalPrice: automatic.quote.total,
+          customerSuppliedPartsAccepted: true, estimatedDuration: "1 өдөр", earliestAvailableAt: automatic.serviceWindow.startsAt,
+          notes: "Сэлбэгээ өөрөө авчирна." };
+        const humanQuote = quoteSchema.parse({ ...automatic.quote, repairEstimate });
+        await db.collection("merchant_quotes").insertOne(humanQuote);
+        await db.collection("merchant_quote_publications").insertOne({ contractVersion: "1", id: humanQuote.id, merchantId,
+          rfqId, buyerId, quoteId: humanQuote.id, quoteRevision: humanQuote.revision, source: "human_confirmed",
+          status: "published", correlationId: context.envelope.correlationId, createdAt: humanQuote.createdAt,
+          serviceWindow: automatic.serviceWindow });
+        const slot = context.data.slots.find(item => item.startsAt === automatic.serviceWindow!.startsAt &&
+          item.endsAt === automatic.serviceWindow!.endsAt);
+        assert.ok(slot);
+        await db.collection("merchant_telegram_drafts").insertOne({ contractVersion: "1", id: `buyer-repair-draft-${merchantId}`,
+          merchantId, rfqId, quoteId: humanQuote.id, quoteRevision: humanQuote.revision, status: "confirmed",
+          createdAt: humanQuote.createdAt, draft: { lines: humanQuote.lines.map((line, itemIndex) => ({ itemIndex,
+            resourceId: line.resourceId, quantity: line.quantity, unitPrice: line.unitPrice, condition: null, available: true, warranty: null })),
+            slotId: slot.id, repairEstimate: { laborPrice: humanQuote.total, partsPrice: null, customerSuppliedPartsAccepted: true,
+              estimatedDuration: "1 өдөр", earliestAvailableAt: automatic.serviceWindow.startsAt, notes: "Сэлбэгээ өөрөө авчирна." },
+            repairNegotiationPolicy: { floorPrice: { amountMinor: 10000000, currency: "MNT" }, humanApprovalBelow: null,
+              automaticNegotiationEnabled: true, maxRounds: 3 } } });
+      }
+
+      const refreshed = await workflow.quotes(repairRequestId, goal, assessment);
+      assert.equal(refreshed.quotes.length, 2);
+      assert.ok(refreshed.quotes.every(offer => offer.merchant && !("parts" in offer.merchant)));
+      const standalone = refreshed.quotes[0];
+      assert.ok(standalone.merchant && !("parts" in standalone.merchant));
+      assert.equal(standalone.total, standalone.merchant.repair.quote.total.amountMinor / 100);
+      assert.equal(standalone.merchant.repair.quote.repairEstimate?.partsPrice, null);
+
+      const negotiated = await workflow.negotiate(repairRequestId, standalone.token, standalone.total - 10000);
+      assert.equal(negotiated.pending, false);
+      assert.ok(negotiated.quote.merchant && !("parts" in negotiated.quote.merchant));
+      const checkout = await workflow.confirm(repairRequestId, negotiated.quote.token, negotiated.quote.total);
+      assert.ok("checkout" in checkout && checkout.checkout?.approvalUrl);
+      const challenge = new URL(checkout.checkout.approvalUrl).pathname.split("/").pop()!;
+      await new CommerceStore(client, db, origin).approveByChallenge(challenge, "approve");
+      const completed = await workflow.confirm(repairRequestId, negotiated.quote.token, negotiated.quote.total);
+      assert.ok("receipt" in completed && completed.receipt);
+      assert.equal(completed.receipt.orderId, undefined);
+      const booking = await db.collection("merchant_repair_bookings").findOne({ transactionId: checkout.checkout.transactionId });
+      assert.ok(booking);
+      assert.equal(booking.repairEstimate.partsPrice, null);
+      assert.equal(booking.repairEstimate.totalPrice.amountMinor, Math.round(negotiated.quote.total * 100));
+      assert.equal(await db.collection("merchant_parts_orders").countDocuments({ transactionId: checkout.checkout.transactionId }), 0);
+      assert.ok(!JSON.stringify(completed).includes("floorPrice"));
     });
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in oldEnv)) delete process.env[key];

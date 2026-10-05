@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import { moneySchema, quoteSchema, type Money, type Quote } from "../../shared/merchant-contracts";
 import { merchantRFQEnvelopeSchema, type MerchantRFQEnvelope } from "../a2a/contracts";
 import { calculateMerchantRFQ } from "../a2a/engine";
-import { settingsSchema } from "../private-contracts";
+import { repairQuoteNegotiationPolicySchema, settingsSchema, type RepairQuoteNegotiationPolicy } from "../private-contracts";
 import { validateHumanQuote, type HumanQuoteData } from "../telegram/validation";
 import type { QuoteDraft } from "../telegram/contracts";
 import { negotiationPriceSchema, negotiationServiceWindowSchema, type NegotiationCode, type NegotiationServiceWindow } from "./contracts";
 
-export type NegotiationOptions = { serviceWindow?: NegotiationServiceWindow; expiresAt?: string };
+export type NegotiationOptions = { serviceWindow?: NegotiationServiceWindow; expiresAt?: string; repairPolicy?: RepairQuoteNegotiationPolicy };
 export type NegotiatedQuote = { quote: Quote; outcome: "accepted" | "countered"; serviceWindow?: NegotiationServiceWindow };
 const messages: Record<NegotiationCode, string> = {
   stale_quote: "Үнийн саналын хувилбар хуучирсан байна. Шинэ саналыг авна уу.",
@@ -44,6 +44,12 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
   if (Date.parse(envelope.expiresAt) <= now.getTime() || (rfq.requiredBy && Date.parse(rfq.requiredBy) <= now.getTime())) fail("rfq_expired");
   if (options.expiresAt && (!Number.isFinite(Date.parse(options.expiresAt)) || Date.parse(options.expiresAt) <= now.getTime())) fail("merchant_timeout");
   if (original.total.currency !== "MNT" || original.total.amountMinor % 100 || original.lines.some(line => line.unitPrice.currency !== "MNT" || line.unitPrice.amountMinor % 100)) fail("invalid_price");
+  const repairPolicy = options.repairPolicy ? repairQuoteNegotiationPolicySchema.safeParse(options.repairPolicy) : null;
+  if (options.repairPolicy && (!repairPolicy?.success || original.kind !== "repair" || !original.repairEstimate ||
+      repairPolicy.data.floorPrice.currency !== original.total.currency ||
+    repairPolicy.data.floorPrice.amountMinor > original.total.amountMinor ||
+      (repairPolicy.data.humanApprovalBelow && (repairPolicy.data.humanApprovalBelow.currency !== original.total.currency ||
+        repairPolicy.data.humanApprovalBelow.amountMinor < repairPolicy.data.floorPrice.amountMinor)))) fail("invalid_price");
   if (requested.amountMinor > original.total.amountMinor) fail("price_rejected");
   const settingsResult = settingsSchema.safeParse(data.settings);
   if (!settingsResult.success || !settingsResult.data.negotiationEnabled || settingsResult.data.merchantId !== rfq.merchantId) fail("negotiation_disabled");
@@ -70,7 +76,7 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
       const resource = resources.find(candidate => candidate.id === line.resourceId && candidate.active && candidate.merchantId === rfq.merchantId);
       if (!resource || resource.price.currency !== "MNT" || resource.minimumPrice.currency !== "MNT") fail("availability_changed");
       const minimum = BigInt(resource.minimumPrice.amountMinor), storedFloor = discounted(resource.price.amountMinor, settings.maxDiscountBps),
-        quotedFloor = discounted(line.unitPrice.amountMinor, settings.maxDiscountBps);
+        quotedFloor = repairPolicy?.success && rfq.kind === "repair" ? BigInt(0) : discounted(line.unitPrice.amountMinor, settings.maxDiscountBps);
       const floor = ceilWholeMNT([minimum, storedFloor, quotedFloor].reduce((max, current) => current > max ? current : max));
       const price = BigInt(line.unitPrice.amountMinor / 100);
       if (floor > price) fail("price_rejected");
@@ -84,7 +90,8 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
         const quantity = Math.min(needed, remainingItems[itemIndex]);
         const selected = { ...data, inventory: "stock" in resource ? [resource] : [], services: "durationMinutes" in resource ? [resource] : [],
           slots: slotId ? data.slots.filter(slot => slot.id === slotId) : data.slots };
-        const match = calculateMerchantRFQ(rfq.merchantId, { ...envelope, rfq: { ...rfq, items: [{ ...item, quantity }] } }, selected, now);
+        const match = calculateMerchantRFQ(rfq.merchantId, { ...envelope, rfq: { ...rfq, humanOfferRequired: false,
+          items: [{ ...item, quantity }] } }, selected, now);
         if (!match.quote?.lines.some(candidate => candidate.resourceId === resource.id && candidate.quantity === quantity)) continue;
         draft.lines.push({ itemIndex, resourceId: resource.id, quantity, unitPrice: line.unitPrice,
           condition: "condition" in resource ? resource.condition : null, available: true, warranty: null });
@@ -93,10 +100,17 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
       }
       if (needed) fail("availability_changed");
     }
-    const target = BigInt(requested.amountMinor / 100), originalTotal = BigInt(original.total.amountMinor / 100),
-      minimumTotal = allocations.reduce((sum, line) => sum + line.floor * line.quantity, BigInt(0));
+    const fixedParts = BigInt(original.repairEstimate?.partsPrice?.amountMinor ?? 0) / BigInt(100);
+    const originalLabor = allocations.reduce((sum, line) => sum + line.price * line.quantity, BigInt(0));
+    let minimumLabor = allocations.reduce((sum, line) => sum + line.floor * line.quantity, BigInt(0));
+    if (repairPolicy?.success) {
+      const policyLaborFloor = BigInt(repairPolicy.data.floorPrice.amountMinor) / BigInt(100) - fixedParts;
+      if (policyLaborFloor > minimumLabor) minimumLabor = policyLaborFloor;
+    }
+    const target = BigInt(requested.amountMinor / 100), minimumTotal = minimumLabor + fixedParts;
     const targetTotal = target > minimumTotal ? target : minimumTotal;
-    let reduction = originalTotal - targetTotal;
+    const targetLabor = targetTotal - fixedParts;
+    let reduction = originalLabor - targetLabor;
     // Stable order prioritizes the highest unit prices. Each chosen unit price is
     // integral MNT, so quantities can leave a residual that requires a counteroffer.
     for (const allocation of [...allocations].sort((a, b) => a.price === b.price ? a.originalIndex - b.originalIndex : a.price > b.price ? -1 : 1)) {
@@ -106,14 +120,30 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
       allocation.price -= applied; reduction -= applied * allocation.quantity;
     }
     const lines = original.lines.map((line, index) => ({ ...line, unitPrice: moneySchema.parse({ amountMinor: Number(allocations[index].price * BigInt(100)), currency: "MNT" }) }));
+    const laborTotal = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice.amountMinor, 0);
+    if (original.repairEstimate) {
+      draft.repairEstimate = { laborPrice: { amountMinor: laborTotal, currency: original.total.currency },
+      partsPrice: original.repairEstimate.partsPrice,
+      customerSuppliedPartsAccepted: original.repairEstimate.customerSuppliedPartsAccepted,
+      estimatedDuration: original.repairEstimate.estimatedDuration,
+      earliestAvailableAt: original.repairEstimate.earliestAvailableAt ?? null,
+      notes: original.repairEstimate.notes ?? null };
+      if (repairPolicy?.success) draft.repairNegotiationPolicy = repairPolicy.data;
+    }
     // Reuse the complete Phase 4 validation for scope, public capability, aggregate
     // stock, warranty and repair duration. Split validation draft lines may refer
     // to the same original quote resource; their aggregate is still checked.
     for (const [index, line] of draft.lines.entries()) line.unitPrice = lines[draftOriginalIndexes[index]].unitPrice;
     validateHumanQuote({ ...data, settings }, envelope, draft, now, revision);
-    const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice.amountMinor, 0), createdAt = now.toISOString();
+    const total = safeNumber(BigInt(laborTotal) + BigInt(original.repairEstimate?.partsPrice?.amountMinor ?? 0));
+    const createdAt = now.toISOString();
+    const repairEstimate = original.repairEstimate ? { ...original.repairEstimate,
+      laborPrice: { amountMinor: laborTotal, currency: original.total.currency },
+      totalPrice: { amountMinor: total, currency: original.total.currency },
+    } : undefined;
     const quote = quoteSchema.parse({ ...original, id: `nq-${createHash("sha256").update(`${rfq.merchantId}:${rfq.id}:${revision}`).digest("hex").slice(0, 48)}`,
       revision, createdAt, availabilityCheckedAt: createdAt, lines, total: { amountMinor: total, currency: "MNT" },
+      ...(repairEstimate ? { repairEstimate } : {}),
       expiresAt: new Date(Math.min(Date.parse(original.expiresAt), Date.parse(envelope.expiresAt), now.getTime() + 15 * 60000,
         options.expiresAt ? Date.parse(options.expiresAt) : Infinity, window ? Date.parse(window.startsAt) : Infinity,
         rfq.requiredBy ? Date.parse(rfq.requiredBy) : Infinity)).toISOString(), status: "offered", reservation: false,
@@ -123,6 +153,11 @@ export function priceNegotiatedQuote(data: HumanQuoteData, originalInput: Quote,
     if (error instanceof NegotiationRuleError) throw error;
     fail("availability_changed");
   }
+}
+
+function safeNumber(value: bigint): number {
+  if (value < BigInt(0) || value > BigInt(Number.MAX_SAFE_INTEGER)) fail("invalid_price");
+  return Number(value);
 }
 
 /** Human approval may accept only exactly representable prices; never silently raise a human-entered target. */

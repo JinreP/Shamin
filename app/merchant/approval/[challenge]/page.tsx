@@ -11,7 +11,10 @@ type ApprovalPageData = {
   booking?: { startsAt: string; endsAt: string; customerSuppliedParts: boolean };
   expiresAt: string;
   status: "pending" | "verified" | "expired" | "revoked";
-  quoteSummaries: { merchantName: string; quoteId: string; revision: number; kind: "parts" | "repair"; terms: string }[];
+  quoteSummaries: { merchantName: string; quoteId: string; revision: number; kind: "parts" | "repair"; terms: string;
+    repairEstimate?: { laborPrice: { amountMinor: number; currency: string }; partsPrice: { amountMinor: number; currency: string } | null;
+      totalPrice: { amountMinor: number; currency: string }; customerSuppliedPartsAccepted: boolean;
+      estimatedDuration: string | null; earliestAvailableAt?: string | null; notes?: string | null } }[];
 };
 
 export default function BuyerApprovalPage() {
@@ -64,6 +67,15 @@ export default function BuyerApprovalPage() {
         <h3>{quote.kind === "parts" ? "Сэлбэгийн үнийн санал" : "Засварын үнийн санал"} · {quote.merchantName}</h3>
         <p>Үнийн санал {quote.quoteId}, хувилбар {quote.revision}</p>
         <p>{quote.terms}</p>
+        {quote.repairEstimate && <>
+          <p>Засварын ажлын үнэ: {quote.repairEstimate.laborPrice.currency} {(quote.repairEstimate.laborPrice.amountMinor / 100).toLocaleString("mn-MN")}</p>
+          <p>Сэлбэгийн үнэ: {quote.repairEstimate.partsPrice === null ? "— · саналд сэлбэг ороогүй" :
+            `${quote.repairEstimate.partsPrice.currency} ${(quote.repairEstimate.partsPrice.amountMinor / 100).toLocaleString("mn-MN")}`}</p>
+          {quote.repairEstimate.partsPrice === null && <p>Захиалагч сэлбэгээ авчрахыг засварчин зөвшөөрсөн: {quote.repairEstimate.customerSuppliedPartsAccepted ? "Тийм" : "Үгүй"}</p>}
+          <p>Эцсийн засварын санал: {quote.repairEstimate.totalPrice.currency} {(quote.repairEstimate.totalPrice.amountMinor / 100).toLocaleString("mn-MN")}</p>
+          {quote.repairEstimate.estimatedDuration && <p>Засварын хугацаа: {quote.repairEstimate.estimatedDuration}</p>}
+          {quote.repairEstimate.notes && <p>{quote.repairEstimate.notes}</p>}
+        </>}
       </article>)}
       {approval.booking && <><p>Засварын цаг: {new Date(approval.booking.startsAt).toLocaleString("mn-MN")} – {new Date(approval.booking.endsAt).toLocaleString("mn-MN")}</p>
         <p>Захиалагч өөрийн сэлбэг авчрах: {approval.booking.customerSuppliedParts ? "Тийм" : "Үгүй"}</p></>}

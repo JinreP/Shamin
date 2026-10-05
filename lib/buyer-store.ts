@@ -12,6 +12,7 @@ import {
   type BuyerReceipt,
 } from "@/lib/buyer-types";
 import type { RepairReport } from "@/lib/repair-report";
+import type { DamageAssessment } from "@/shared/merchant-contracts";
 
 import { createBuyerMerchantGateway } from "./buyer-merchant-client";
 import { BuyerMerchantWorkflow, BuyerWorkflowError } from "./buyer-merchant-workflow";
@@ -56,6 +57,7 @@ type RepairRequestDocument = {
   receiptToken?: string;
   checkout?: z.infer<typeof buyerCheckoutSchema>;
   pendingNegotiation?: { target: number };
+  quoteBatchId?: string;
   events: Event[];
   createdAt: Date;
   updatedAt: Date;
@@ -121,7 +123,21 @@ async function merchantWorkflow() {
   return new BuyerMerchantWorkflow(db, ownerId, createBuyerMerchantGateway());
 }
 export async function getRequestQuotes(requestId: string, goal: Goal) {
-  return (await merchantWorkflow()).quotes(requestId, goal);
+  const { ownerId, requests } = await context();
+  const request = await requests.findOne({ _id: requestId, ownerId });
+  if (!request) throw new BuyerWorkflowError("Хүсэлт олдсонгүй.");
+  const extracted = request.extracted;
+  const assessment: DamageAssessment | undefined = extracted?.damageItems?.length ? {
+    sourceDocumentRef: request._id,
+    sourceDocument: request.report,
+    damageItems: extracted.damageItems.map(item => ({ ...item, imageRefs: item.imageRefs ?? [],
+      assessmentAmount: item.assessmentAmount === null ? null : { amountMinor: item.assessmentAmount * 100, currency: "MNT" },
+    })),
+    totalAssessmentAmount: extracted.totalAssessmentAmount === null ? null : extracted.totalAssessmentAmount === undefined
+      ? null : { amountMinor: extracted.totalAssessmentAmount * 100, currency: "MNT" },
+    notes: extracted.notes ?? null,
+  } : undefined;
+  return (await merchantWorkflow()).quotes(requestId, goal, assessment);
 }
 export async function negotiateRequest(requestId: string, token: string, target: number) {
   return (await merchantWorkflow()).negotiate(requestId, token, target);

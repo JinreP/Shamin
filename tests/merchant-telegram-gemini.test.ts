@@ -8,6 +8,7 @@ import { readMerchantEnv } from "../merchant/server/env";
 import { createAIProvider, geminiGenerateConfig, geminiPrompt, GeminiProvider, OyuLLMProvider, type AIProvider, type AIRequest } from "../merchant/server/providers";
 import { extractQuoteDraft, missingDraftFields, quoteDraftProviderSchema, QuoteExtractionError } from "../merchant/telegram/extraction";
 import { validateHumanQuote, HumanQuoteError, type HumanQuoteData } from "../merchant/telegram/validation";
+import { formatRFQNotification } from "../merchant/telegram/service";
 import type { QuoteDraft } from "../merchant/telegram/contracts";
 import type { MerchantRFQEnvelope } from "../merchant/a2a/contracts";
 
@@ -35,6 +36,39 @@ function draft(data = records()): QuoteDraft {
     slotId: data.slots[0]?.id ?? null };
 }
 const fake = (text: string): AIProvider => ({ generate: async () => ({ text, provider: "gemini", model: "mock-model" }) });
+
+test("repair Telegram notification separates assessment amounts and refers to private evidence without embedding images", () => {
+  const input = request("demo-auto-care", "repair");
+  input.rfq.humanOfferRequired = true;
+  input.rfq.damageAssessment = { sourceDocumentRef: "assessment-report-1", sourceDocument: "Original assessment",
+    damageItems: [{ id: "damage-bumper", component: "Урд гупер", description: "Хагарсан",
+      assessmentAmount: { amountMinor: 45000000, currency: "MNT" }, imageRefs: ["data:image/png;base64,aGVsbG8="] }],
+    totalAssessmentAmount: { amountMinor: 45000000, currency: "MNT" } };
+  const message = formatRFQNotification(input);
+  assert.match(message, /Шинэ засварын RFQ/);
+  assert.match(message, /Үнэлгээ: MNT 450,000/);
+  assert.match(message, /засварын газрын санал биш/);
+  assert.match(message, /1 зураг/);
+  assert.match(message, /assessment-report-1/);
+  assert.ok(!message.includes("data:image/png;base64"));
+});
+
+test("assessment-backed repair drafts require explicit private negotiation controls before confirmation", () => {
+  const data = records("demo-auto-care"), input = request("demo-auto-care", "repair");
+  input.rfq.humanOfferRequired = true;
+  const quoteDraft = draft(data);
+  quoteDraft.repairEstimate = { laborPrice: quoteDraft.lines[0].unitPrice, partsPrice: null,
+    customerSuppliedPartsAccepted: true, estimatedDuration: "1 өдөр", earliestAvailableAt: null, notes: null };
+  quoteDraft.repairNegotiationPolicy = { floorPrice: null, humanApprovalBelow: null,
+    automaticNegotiationEnabled: null, maxRounds: null };
+  const missing = missingDraftFields(quoteDraft, input.rfq.kind, true);
+  assert.ok(missing.includes("хувийн доод үнэ"));
+  assert.ok(missing.includes("автомат хэлэлцээ зөвшөөрөх эсэх"));
+  assert.ok(missing.includes("хэлэлцээний оролдлогын тоо"));
+  quoteDraft.repairNegotiationPolicy = { floorPrice: { amountMinor: 10000000, currency: "MNT" }, humanApprovalBelow: null,
+    automaticNegotiationEnabled: true, maxRounds: 3 };
+  assert.deepEqual(missingDraftFields(quoteDraft, input.rfq.kind, true), []);
+});
 
 test("Gemini provider schema uses the documented compact subset while Zod retains complete validation", () => {
   const serialized = JSON.stringify(quoteDraftProviderSchema);
@@ -137,6 +171,19 @@ test("human quote preserves public shared contract and stored warranty without r
   assert.ok(!JSON.stringify(quote).includes("minimumPrice")); assert.ok(!JSON.stringify(quote).includes("maxDiscountBps"));
   assert.notEqual(quote.id, validateHumanQuote(data, envelope, input, now, 3).id);
   assert.equal(quote.id, validateHumanQuote(data, envelope, input, now, 2).id);
+
+  const repairData = records("demo-auto-care"), repairEnvelope = request("demo-auto-care", "repair");
+  repairEnvelope.rfq.humanOfferRequired = true;
+  const repairDraft = draft(repairData), slot = repairData.slots[0]!;
+  repairDraft.slotId = slot.id;
+  repairDraft.repairEstimate = { laborPrice: repairDraft.lines[0].unitPrice, partsPrice: null,
+    customerSuppliedPartsAccepted: true, estimatedDuration: "1 өдөр", earliestAvailableAt: slot.startsAt, notes: "Сэлбэгээ авчирна." };
+  repairDraft.repairNegotiationPolicy = { floorPrice: { amountMinor: 10000000, currency: "MNT" },
+    humanApprovalBelow: null, automaticNegotiationEnabled: true, maxRounds: 3 };
+  const repairQuote = validateHumanQuote(repairData, repairEnvelope, repairDraft, now, 1);
+  assert.equal(repairQuote.repairEstimate?.partsPrice, null);
+  assert.equal(repairQuote.repairEstimate?.totalPrice.amountMinor, repairQuote.total.amountMinor);
+  assert.ok(!JSON.stringify(repairQuote).includes("floorPrice"));
 });
 
 test("private floors and discount limits reject unsafe prices without revealing the limits", () => {

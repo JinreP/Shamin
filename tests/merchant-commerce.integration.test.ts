@@ -75,7 +75,7 @@ test("commerce flow persists safely in disposable MongoDB and serves official MC
     assert.equal("buyerId" in page.page, false);
     assert.equal("selections" in page.page, false);
     await store.approveByChallenge(challenge, "approve");
-    return { ...created, challenge, selections };
+    return { ...created, challenge, selections, approvalPage: page.page };
   }
 
   async function createQuoteApproval(kind: "parts" | "repair", prefix: string, withBooking = false) {
@@ -212,6 +212,36 @@ test("commerce flow persists safely in disposable MongoDB and serves official MC
       await store.cancelRepairBooking(approved.transactionId, approved.approvalId, buyerId, [repairMerchant]);
       await db.collection("merchant_slots").updateOne({ merchantId: repairMerchant, id: `${repairMerchant}-slot-0` }, { $set: { status: "blocked" } });
       await db.collection("merchant_slots").updateOne({ merchantId: repairMerchant, id: `${repairMerchant}-slot-1` }, { $set: { status: "blocked" } });
+    });
+
+    await t.test("human repair estimate is shown for approval and preserved by book_repair", async () => {
+      const automatic = await quote("repair", unique("human-repair-estimate"));
+      const processing = await db.collection("merchant_rfq_processing").findOne({ merchantId: repairMerchant, id: automatic.rfqId });
+      const serviceWindow = processing?.response?.serviceWindow;
+      assert.ok(serviceWindow);
+      const repairEstimate = { laborPrice: { amountMinor: 38000000, currency: "MNT" }, partsPrice: null,
+        totalPrice: { amountMinor: 38000000, currency: "MNT" }, customerSuppliedPartsAccepted: true,
+        estimatedDuration: "1 өдөр", earliestAvailableAt: serviceWindow.startsAt, notes: "Сэлбэгээ өөрөө авчирна." };
+      const humanQuote = quoteSchema.parse({ ...automatic,
+        lines: automatic.lines.map(line => ({ ...line, unitPrice: repairEstimate.laborPrice })),
+        total: repairEstimate.totalPrice, repairEstimate });
+      await db.collection("merchant_quotes").replaceOne({ merchantId: repairMerchant, id: automatic.id,
+        revision: automatic.revision }, humanQuote);
+      await db.collection("merchant_quote_publications").insertOne({ contractVersion: "1", id: humanQuote.id,
+        merchantId: repairMerchant, rfqId: humanQuote.rfqId, buyerId, quoteId: humanQuote.id,
+        quoteRevision: humanQuote.revision, source: "human_confirmed", status: "published",
+        correlationId: processing.correlationId, createdAt: new Date().toISOString(), serviceWindow });
+
+      const approved = await approval(humanQuote, unique("txn-human-repair"), true);
+      const summary = ((approved.approvalPage as { quoteSummaries: { quoteId: string; repairEstimate?: typeof repairEstimate }[] })
+        .quoteSummaries)
+        .find(item => item.quoteId === humanQuote.id);
+      assert.deepEqual(summary?.repairEstimate, repairEstimate);
+      const booking = await store.bookRepair({ transactionId: approved.transactionId, approvalId: approved.approvalId,
+        idempotencyKey: approved.transactionId }, buyerId, [repairMerchant]);
+      assert.deepEqual(booking.repairEstimate, repairEstimate);
+      assert.equal(booking.repairEstimate?.partsPrice, null);
+      await store.cancelRepairBooking(approved.transactionId, approved.approvalId, buyerId, [repairMerchant]);
     });
 
     await t.test("concurrent repair bookings cannot exceed slot capacity", async () => {

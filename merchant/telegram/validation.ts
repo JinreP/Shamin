@@ -5,7 +5,7 @@ import { quoteSchema, type Quote } from "../../shared/merchant-contracts";
 import { merchantRFQEnvelopeSchema, type MerchantRFQEnvelope } from "../a2a/contracts";
 import { calculateMerchantRFQ } from "../a2a/engine";
 import type { MerchantRFQData } from "../a2a/store";
-import { inventorySchema, serviceSchema, settingsSchema, slotSchema } from "../private-contracts";
+import { inventorySchema, repairQuoteNegotiationPolicySchema, serviceSchema, settingsSchema, slotSchema } from "../private-contracts";
 import { quoteDraftSchema, type QuoteDraft } from "./contracts";
 import { missingDraftFields } from "./extraction";
 
@@ -35,7 +35,7 @@ export function validateHumanQuote(input: HumanQuoteData, inputEnvelope: Merchan
   const envelope = envelopeResult.data, draft = draftResult.data, rfq = envelope.rfq, merchantId = rfq.merchantId;
   if (Date.parse(envelope.expiresAt) <= now.getTime() || (rfq.requiredBy && Date.parse(rfq.requiredBy) <= now.getTime()))
     throw new HumanQuoteError("Хүсэлтийн хүчинтэй хугацаа дууссан тул үнийн саналыг баталгаажуулах боломжгүй байна.");
-  const missing = missingDraftFields(draft, rfq.kind);
+  const missing = missingDraftFields(draft, rfq.kind, rfq.humanOfferRequired === true);
   if (missing.length) throw new HumanQuoteError(`Үнийн саналын мэдээлэл дутуу байна: ${missing.join(", ")}. Тодруулж дахин илгээнэ үү.`, "incomplete");
   try {
     const data: HumanQuoteData = { ...input,
@@ -66,7 +66,8 @@ export function validateHumanQuote(input: HumanQuoteData, inputEnvelope: Merchan
         inventory: "stock" in resource ? [resource] : [], services: "durationMinutes" in resource ? [resource] : [],
         slots: rfq.kind === "repair" ? data.slots.filter(slot => slot.id === draft.slotId) : data.slots,
       };
-      const matched = calculateMerchantRFQ(merchantId, { ...envelope, rfq: { ...rfq, items: [{ ...item, quantity: line.quantity }] } }, selected, now);
+      const matched = calculateMerchantRFQ(merchantId, { ...envelope, rfq: { ...rfq, humanOfferRequired: false,
+        items: [{ ...item, quantity: line.quantity }] } }, selected, now);
       const publicLine = matched.quote?.lines.find(candidate => candidate.resourceId === resource.id);
       if (!publicLine || publicLine.quantity !== line.quantity) throw invalid();
       lines.push({ ...publicLine, quantity: line.quantity, unitPrice: line.unitPrice });
@@ -83,14 +84,38 @@ export function validateHumanQuote(input: HumanQuoteData, inputEnvelope: Merchan
         throw new HumanQuoteError("Сонгосон засварын цаг боломжгүй болсон байна. Өөр сул цаг сонгоно уу.");
       slotStart = Date.parse(slot.startsAt);
     }
-    const createdAt = now.toISOString(), total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice.amountMinor, 0);
+    const createdAt = now.toISOString(), laborTotal = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice.amountMinor, 0);
+    if (!Number.isSafeInteger(laborTotal)) throw invalid();
+    let repairEstimate: Quote["repairEstimate"];
+    let total = laborTotal;
+    if (rfq.kind === "repair" && rfq.humanOfferRequired) {
+      const draftEstimate = draft.repairEstimate;
+      const slot = data.slots.find(record => record.id === draft.slotId && record.merchantId === merchantId);
+      if (!draftEstimate || !slot || !draftEstimate.laborPrice || draftEstimate.laborPrice.currency !== "MNT" ||
+          draftEstimate.laborPrice.amountMinor !== laborTotal || draftEstimate.laborPrice.amountMinor % 100 ||
+          (draftEstimate.partsPrice && (draftEstimate.partsPrice.currency !== "MNT" || draftEstimate.partsPrice.amountMinor % 100)) ||
+          (draftEstimate.partsPrice === null && draftEstimate.customerSuppliedPartsAccepted !== true) ||
+          (draftEstimate.partsPrice !== null && draftEstimate.customerSuppliedPartsAccepted === null)) throw invalid();
+      const partsAmount = draftEstimate.partsPrice?.amountMinor ?? 0;
+      if (!Number.isSafeInteger(laborTotal + partsAmount) || (draftEstimate.earliestAvailableAt &&
+          Date.parse(draftEstimate.earliestAvailableAt) !== Date.parse(slot.startsAt))) throw invalid();
+      total = laborTotal + partsAmount;
+      const policyResult = repairQuoteNegotiationPolicySchema.safeParse(draft.repairNegotiationPolicy);
+      if (!policyResult.success || policyResult.data.floorPrice.amountMinor > total ||
+          (policyResult.data.humanApprovalBelow !== null &&
+            policyResult.data.humanApprovalBelow.amountMinor < policyResult.data.floorPrice.amountMinor)) throw invalid();
+      repairEstimate = { laborPrice: draftEstimate.laborPrice, partsPrice: draftEstimate.partsPrice,
+        totalPrice: { amountMinor: total, currency: "MNT" }, customerSuppliedPartsAccepted: draftEstimate.customerSuppliedPartsAccepted!,
+        estimatedDuration: draftEstimate.estimatedDuration, earliestAvailableAt: draftEstimate.earliestAvailableAt,
+        notes: draftEstimate.notes };
+    }
     const quote = quoteSchema.safeParse({ contractVersion: "1",
       id: `hq-${createHash("sha256").update(`${merchantId}:${rfq.id}:${revision}`).digest("hex").slice(0, 48)}`,
       merchantId, rfqId: rfq.id, buyerId: rfq.buyerId, revision, kind: rfq.kind, mode: "simulated", createdAt,
       lines, total: { amountMinor: total, currency: "MNT" },
       expiresAt: new Date(Math.min(Date.parse(envelope.expiresAt), now.getTime() + 15 * 60000, slotStart,
         rfq.requiredBy ? Date.parse(rfq.requiredBy) : Infinity)).toISOString(),
-      availabilityCheckedAt: createdAt, reservation: false, status: "offered",
+      availabilityCheckedAt: createdAt, reservation: false, ...(repairEstimate ? { repairEstimate } : {}), status: "offered",
       terms: `ХҮН БАТАЛГААЖУУЛСАН ТУРШИЛТЫН ҮНИЙН САНАЛ. ${[...terms].join(" ")}`.slice(0, 4000),
     });
     if (!quote.success) throw invalid();

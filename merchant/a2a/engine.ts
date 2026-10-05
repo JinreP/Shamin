@@ -106,6 +106,8 @@ export function calculateMerchantRFQ(merchantId: string, envelope: MerchantRFQEn
     if (!slot) return decline("no_repair_slot", "Хүссэн үйлчилгээнд тохирох сул цаг алга байна.");
     serviceWindow = { startsAt: slot.startsAt, endsAt: slot.endsAt };
   }
+  if (rfq.humanOfferRequired) return merchantRFQResponseSchema.parse({ ...base, outcome: "pending",
+    message: "Засварын нотлох мэдээллийг хүлээн авлаа. Хүний засварчин үнийн саналаа баталгаажуулсны дараа харагдана.", issues: [] });
   const quoteId = `q-${createHash("sha256").update(`${merchantId}:${rfq.id}`).digest("hex").slice(0, 48)}`;
   const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice.amountMinor, 0);
   const createdAt = now.toISOString();

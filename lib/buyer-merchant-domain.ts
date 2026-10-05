@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { buyerGoalSchema, buyerQuoteSchema, merchantBundleSchema } from "./buyer-types";
 import { merchantRFQEnvelopeSchema, type MerchantRFQResponse } from "../merchant/a2a/contracts";
-import type { Quote } from "../shared/merchant-contracts";
+import type { DamageAssessment, Quote } from "../shared/merchant-contracts";
 
 export type BuyerGoal = z.infer<typeof buyerGoalSchema>;
 export type BuyerOffer = z.infer<typeof buyerQuoteSchema> & { token: string };
 export type MerchantBundle = z.infer<typeof merchantBundleSchema>;
+export type MerchantRepairOnly = { repair: MerchantBundle["repair"]; booking: MerchantBundle["booking"] };
 
 export function toMinor(amount: number): number {
   const minor = amount * 100;
@@ -25,7 +26,7 @@ export function toMNT(quote: Quote): number {
 // This prototype deliberately supports the agreed full Prius repair, without
 // silently omitting unknown damage or manufacturing extra repair operations.
 export function buildRFQ(goal: BuyerGoal, merchantId: string, kind: "parts" | "repair",
-  buyerId: string, batchId: string, now = new Date()) {
+  buyerId: string, batchId: string, now = new Date(), damageAssessment?: DamageAssessment) {
   if (!/^(?:Toyota\s+)?(?:Prius|Приус)\s*30$/i.test(goal.vehicle.trim()) ||
       goal.parts.trim() !== "Урд бампер, зүүн урд гэрэл" ||
       goal.tasks.trim() !== "Солих, бампер будах") {
@@ -40,9 +41,24 @@ export function buildRFQ(goal: BuyerGoal, merchantId: string, kind: "parts" | "r
     expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
     rfq: { contractVersion: "1", id: `rfq-${batchId}-${merchantId}`, merchantId, buyerId,
       createdAt: now.toISOString(), kind, vehicle: { make: "Toyota", model: "Prius 30" },
-      items, budget: { amountMinor: toMinor(goal.budget), currency: "MNT" },
+      items, ...(kind === "repair" && damageAssessment ? { humanOfferRequired: true,
+        ...(damageAssessment ? { damageAssessment } : {}) } : {}),
+      budget: { amountMinor: toMinor(goal.budget), currency: "MNT" },
       requiredBy: new Date(now.getTime() + goal.days * 86_400_000).toISOString(), status: "received" },
   });
+}
+
+export function repairOnlyOffer(goal: BuyerGoal, repair: MerchantRepairOnly["repair"], booking: MerchantRepairOnly["booking"],
+  merchantName: string, revision = 1, now = new Date()): BuyerOffer {
+  const quote = repair.quote, total = toMNT(quote), estimate = quote.repairEstimate;
+  const parts = estimate?.partsPrice ? estimate.partsPrice.amountMinor / 100 : 0;
+  const labor = estimate ? estimate.laborPrice.amountMinor / 100 : total - parts;
+  if (labor + parts !== total) throw new Error("Засварын саналын бүтэцтэй үнэ тохирохгүй байна.");
+  const days = Math.max(1, Math.ceil((Date.parse(booking.endsAt) - now.getTime()) / 86_400_000));
+  return { id: quote.merchantId, token: randomUUID(), partsMerchant: estimate?.partsPrice ? "Засварын газрын сэлбэг" : "Сэлбэг саналд ороогүй",
+    repairMerchant: merchantName, kind: "Засварын санал", parts, labor, total, days, warranty: quote.terms,
+    revision, expiresAt: Date.parse(quote.expiresAt), goal,
+    merchant: { repair, booking } };
 }
 
 export function bundleOffer(goal: BuyerGoal, bundle: MerchantBundle, names: Record<string, string>,
@@ -76,4 +92,12 @@ export function combineOffers(goal: BuyerGoal, responses: MerchantRFQResponse[],
     repair: { quote: repair.quote!, correlationId: repair.correlationId },
     booking: { merchantId: repair.merchantId, ...repair.serviceWindow!, customerSuppliedParts: true },
   }, names))).sort((a, b) => a.total - b.total);
+}
+
+export function combineRepairOffers(goal: BuyerGoal, responses: MerchantRFQResponse[], names: Record<string, string>) {
+  return responses.filter(response => response.outcome === "quoted" && response.quote?.kind === "repair" && response.serviceWindow)
+    .map(response => repairOnlyOffer(goal, { quote: response.quote!, correlationId: response.correlationId },
+      { merchantId: response.merchantId, ...response.serviceWindow!, customerSuppliedParts: response.quote!.repairEstimate?.customerSuppliedPartsAccepted ?? false },
+      names[response.merchantId] ?? response.merchantId))
+    .sort((a, b) => a.repairMerchant.localeCompare(b.repairMerchant));
 }

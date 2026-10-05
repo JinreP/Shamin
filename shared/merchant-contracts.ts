@@ -8,6 +8,34 @@ export const moneySchema = z.strictObject({
   amountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   currency: z.string().regex(/^[A-Z]{3}$/),
 });
+export const damageAssessmentSchema = z.strictObject({
+  sourceDocumentRef: z.string().max(1000).nullable().optional(),
+  sourceDocument: z.string().max(12000).nullable().optional(),
+  damageItems: z.array(z.strictObject({
+    id: idSchema, component: z.string().trim().min(1).max(200), description: z.string().trim().max(2000).nullable(),
+    assessmentAmount: moneySchema.nullable(), imageRefs: z.array(z.string().max(150000)
+      .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/)).max(5),
+  })).max(100),
+  totalAssessmentAmount: moneySchema.nullable(), notes: z.string().trim().max(4000).nullable().optional(),
+}).superRefine((assessment, context) => {
+  const imageBytes = assessment.damageItems.reduce((sum, item) => sum + item.imageRefs.reduce((total, ref) => total + ref.length, 0), 0);
+  if (imageBytes > 500000) context.addIssue({ code: "custom", message: "Damage evidence exceeds the supported size" });
+});
+export const repairEstimateSchema = z.strictObject({
+  laborPrice: moneySchema, partsPrice: moneySchema.nullable(), totalPrice: moneySchema,
+  customerSuppliedPartsAccepted: z.boolean(), estimatedDuration: z.string().trim().max(200).nullable(),
+  earliestAvailableAt: timestampSchema.nullable().optional(), notes: z.string().trim().max(4000).nullable().optional(),
+}).superRefine((estimate, context) => {
+  const expected = BigInt(estimate.laborPrice.amountMinor) + BigInt(estimate.partsPrice?.amountMinor ?? 0);
+  if (estimate.laborPrice.currency !== estimate.totalPrice.currency ||
+      (estimate.partsPrice && estimate.partsPrice.currency !== estimate.totalPrice.currency) ||
+      expected !== BigInt(estimate.totalPrice.amountMinor)) {
+    context.addIssue({ code: "custom", message: "Repair estimate total must equal labor plus supplied parts" });
+  }
+  if (estimate.partsPrice === null && !estimate.customerSuppliedPartsAccepted) {
+    context.addIssue({ code: "custom", message: "A labor-only estimate must state that customer-supplied parts are accepted" });
+  }
+});
 const base = { contractVersion: z.literal(CONTRACT_VERSION), id: idSchema,
   merchantId: idSchema, createdAt: timestampSchema };
 const mode = z.enum(["simulated", "live"]);
@@ -25,8 +53,13 @@ export const rfqSchema = z.strictObject({ ...base, buyerId: idSchema,
   }), items: z.array(z.strictObject({ description: z.string().min(1).max(2000),
     quantity: z.number().int().positive().max(10000), partNumber: z.string().min(1).optional(),
     preference: z.enum(["any", "oem", "aftermarket", "used"]).optional(),
-  })).min(1), budget: moneySchema.optional(), requiredBy: timestampSchema.optional(),
+  })).min(1), damageAssessment: damageAssessmentSchema.optional(), humanOfferRequired: z.boolean().optional(),
+  budget: moneySchema.optional(), requiredBy: timestampSchema.optional(),
   status: z.enum(["received", "processing", "quoted", "declined", "expired"]),
+}).superRefine((rfq, context) => {
+  if (rfq.kind !== "repair" && (rfq.damageAssessment || rfq.humanOfferRequired)) {
+    context.addIssue({ code: "custom", message: "Damage assessments and human repair offers require a repair RFQ" });
+  }
 });
 export const quoteSchema = z.strictObject({ ...base, rfqId: idSchema, buyerId: idSchema,
   revision: z.number().int().positive(), kind: z.enum(["parts", "repair"]), mode,
@@ -34,10 +67,15 @@ export const quoteSchema = z.strictObject({ ...base, rfqId: idSchema, buyerId: i
     quantity: z.number().int().positive(), unitPrice: moneySchema,
   })).min(1), total: moneySchema, expiresAt: timestampSchema,
   availabilityCheckedAt: timestampSchema, reservation: z.literal(false),
+  repairEstimate: repairEstimateSchema.optional(),
   terms: z.string().min(1).max(4000), status: z.enum(["offered", "superseded", "expired", "withdrawn"]),
 }).superRefine((v, ctx) => {
   const sum = v.lines.reduce((n, line) => n + line.quantity * line.unitPrice.amountMinor, 0);
-  if (!Number.isSafeInteger(sum) || sum !== v.total.amountMinor || v.lines.some(l => l.unitPrice.currency !== v.total.currency))
+  const expectedTotal = v.repairEstimate?.totalPrice.amountMinor ?? sum;
+  if (!Number.isSafeInteger(sum) || expectedTotal !== v.total.amountMinor ||
+      v.lines.some(l => l.unitPrice.currency !== v.total.currency) ||
+      (v.repairEstimate && (v.kind !== "repair" || v.repairEstimate.laborPrice.amountMinor !== sum ||
+        v.repairEstimate.totalPrice.currency !== v.total.currency)))
     ctx.addIssue({ code: "custom", message: "Quote total must equal lines in one currency" });
   if (Date.parse(v.expiresAt) <= Date.parse(v.createdAt) || Date.parse(v.availabilityCheckedAt) > Date.parse(v.createdAt))
     ctx.addIssue({ code: "custom", message: "Invalid quote validity or availability timestamps" });
@@ -82,3 +120,5 @@ export type Approval = z.infer<typeof approvalSchema>;
 export type Transaction = z.infer<typeof transactionSchema>;
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 export type Money = z.infer<typeof moneySchema>;
+export type DamageAssessment = z.infer<typeof damageAssessmentSchema>;
+export type RepairEstimate = z.infer<typeof repairEstimateSchema>;

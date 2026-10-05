@@ -23,6 +23,13 @@ export const quoteDraftSchema = z.strictObject({
     .min(1)
     .max(100),
   slotId: idSchema.nullable(),
+  repairEstimate: z.strictObject({
+    laborPrice: moneySchema.nullable(), partsPrice: moneySchema.nullable(),
+    customerSuppliedPartsAccepted: z.boolean().nullable(), estimatedDuration: z.string().trim().max(200).nullable(),
+    earliestAvailableAt: timestampSchema.nullable(), notes: z.string().trim().max(4000).nullable(),
+  }).optional(),
+  repairNegotiationPolicy: z.strictObject({ floorPrice: moneySchema.nullable(), humanApprovalBelow: moneySchema.nullable(),
+    automaticNegotiationEnabled: z.boolean().nullable(), maxRounds: z.number().int().min(1).max(5).nullable() }).nullable().optional(),
 });
 export type QuoteDraft = z.infer<typeof quoteDraftSchema>;
 export type TelegramBinding = {

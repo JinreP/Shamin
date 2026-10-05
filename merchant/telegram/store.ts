@@ -4,7 +4,7 @@ import type { ClientSession, Db, Document, MongoClient } from "mongodb";
 import { z } from "zod";
 import { auditEventSchema, idSchema, quoteSchema, type Quote } from "../../shared/merchant-contracts";
 import { DEMO_MERCHANTS } from "../demo-merchants";
-import { settingsSchema } from "../private-contracts";
+import { repairQuoteNegotiationPolicySchema, settingsSchema } from "../private-contracts";
 import { merchantRFQEnvelopeSchema, merchantRFQResponseSchema, type MerchantRFQEnvelope } from "../a2a/contracts";
 import { RFQ_PROCESSING_COLLECTION, type MerchantRFQData } from "../a2a/store";
 import { loadScopedRFQContext, ScopedRFQDataError } from "../a2a/data";
@@ -325,6 +325,14 @@ export class TelegramMerchantStore {
         quote.kind !== envelope.rfq.kind || quote.revision !== revision || quote.reservation !== false || quote.status !== "offered" ||
         Date.parse(quote.expiresAt) > Date.parse(envelope.expiresAt) || !data.profile?.active || quote.mode !== data.profile.mode)
         throw new TelegramStoreError("Баталгаажуулах үнийн санал хүсэлтийн мэдээлэлтэй тохирохгүй байна.", "invalid_quote");
+      if (envelope.rfq.kind === "repair" && envelope.rfq.humanOfferRequired) {
+        const policy = repairQuoteNegotiationPolicySchema.safeParse(record.draft.repairNegotiationPolicy);
+        if (!quote.repairEstimate || !policy.success || policy.data.floorPrice.amountMinor > quote.total.amountMinor ||
+            (policy.data.humanApprovalBelow !== null &&
+              (policy.data.humanApprovalBelow.amountMinor < policy.data.floorPrice.amountMinor ||
+                policy.data.humanApprovalBelow.amountMinor > quote.total.amountMinor)))
+          throw new TelegramStoreError("Засварын саналын хувийн хэлэлцээний нөхцөл буруу байна.", "invalid_quote");
+      }
       const resources = quote.kind === "parts" ? data.inventory : data.services;
       for (const line of quote.lines) {
         const resource = resources.find(candidate => candidate.id === line.resourceId && candidate.merchantId === verified.merchantId && candidate.active);

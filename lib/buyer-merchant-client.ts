@@ -5,18 +5,19 @@ import { SendMessageRequest } from "@a2a-js/sdk";
 import { Client as MCPClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
-import { idSchema } from "../shared/merchant-contracts";
+import { idSchema, type DamageAssessment } from "../shared/merchant-contracts";
 import { getBusinessType } from "../merchant/business-types";
 import { merchantRFQResponseSchema } from "../merchant/a2a/contracts";
+import { quoteUpdatesResponseSchema } from "../merchant/telegram/contracts";
 import { negotiationResponseSchema, type NegotiationRequest } from "../merchant/negotiation/contracts";
-import { buildRFQ, combineOffers, type BuyerGoal } from "./buyer-merchant-domain";
+import { buildRFQ, combineOffers, combineRepairOffers, type BuyerGoal } from "./buyer-merchant-domain";
 
 export class BuyerMerchantError extends Error {}
 export type CommerceCall = <T>(name: string, input: Record<string, unknown>, schema: z.ZodType<T>) => Promise<T>;
 export interface BuyerMerchantGateway {
   buyerId: string;
   origin: string;
-  quoteBatch(goal: BuyerGoal, batchId: string): Promise<{ quotes: ReturnType<typeof combineOffers>; issues: string[] }>;
+  quoteBatch(goal: BuyerGoal, batchId: string, assessment?: DamageAssessment, now?: Date): Promise<{ quotes: ReturnType<typeof combineOffers>; issues: string[] }>;
   negotiate(input: NegotiationRequest): Promise<z.infer<typeof negotiationResponseSchema>>;
   negotiationResult(input: NegotiationRequest): Promise<z.infer<typeof negotiationResponseSchema>>;
   commerce<T>(work: (call: CommerceCall) => Promise<T>): Promise<T>;
@@ -87,12 +88,14 @@ export function createBuyerMerchantGateway(source: Record<string, string | undef
 
   return {
     buyerId: buyerId.data, origin: originURL,
-    async quoteBatch(goal, batchId) {
+    async quoteBatch(goal, batchId, assessment, now = new Date()) {
       const response = await a2aFetch(`${originURL}/api/a2a/discovery`);
       if (!response.ok) throw new BuyerMerchantError("Merchant жагсаалтыг авах боломжгүй байна.");
       const directory = directorySchema.parse(await response.json());
       const names = Object.fromEntries(directory.merchants.map(item => [item.merchantId, item.name]));
-      const results = await Promise.allSettled(directory.merchants.map(async merchant => {
+      const eligible = directory.merchants.filter(merchant => (merchant.kind === "parts" || merchant.kind === "repair") &&
+        (!assessment || merchant.kind === "repair"));
+      const results = await Promise.allSettled(eligible.map(async merchant => {
         const expected = `${originURL}/api/a2a/${merchant.merchantId}`;
         if (merchant.a2aUrl !== expected || merchant.agentCardUrl !== `${expected}/.well-known/agent-card.json`) {
           throw new BuyerMerchantError("Merchant discovery хаяг тохирохгүй байна.");
@@ -100,20 +103,30 @@ export function createBuyerMerchantGateway(source: Record<string, string | undef
         if (merchant.businessType && merchant.businessType !== getBusinessType(merchant.kind)) {
           throw new BuyerMerchantError("Merchant business type mismatch.");
         }
-        const envelope = buildRFQ(goal, merchant.merchantId, merchant.kind, buyerId.data, batchId);
-        const value = merchantRFQResponseSchema.parse(await send(merchant.merchantId, envelope));
+        const envelope = buildRFQ(goal, merchant.merchantId, merchant.kind, buyerId.data, batchId, now, assessment);
+        let value = merchantRFQResponseSchema.parse(await send(merchant.merchantId, envelope));
         if (value.merchantId !== merchant.merchantId || value.rfqId !== envelope.rfq.id ||
             value.correlationId !== envelope.correlationId || (value.quote &&
             (value.quote.merchantId !== merchant.merchantId || value.quote.rfqId !== envelope.rfq.id || value.quote.buyerId !== buyerId.data || value.quote.kind !== merchant.kind || value.quote.mode !== "simulated"))) {
           throw new BuyerMerchantError("Merchant саналын хүрээ тохирохгүй байна.");
         }
+        if (value.outcome === "pending" && merchant.kind === "repair") {
+          const updates = quoteUpdatesResponseSchema.parse(await send(merchant.merchantId, {
+            contractVersion: "1", action: "get_quote_updates", rfqId: envelope.rfq.id, afterRevision: 0,
+          }));
+          if (updates.merchantId !== merchant.merchantId || updates.rfqId !== envelope.rfq.id ||
+              updates.correlationId !== envelope.correlationId) throw new BuyerMerchantError("Засварын саналын хүрээ тохирохгүй байна.");
+          const published = updates.quotes.at(-1);
+          if (published) value = merchantRFQResponseSchema.parse({ ...value, outcome: "quoted", message: "Засварчин хүний баталгаажуулсан санал ирлээ.",
+            quote: published.quote, ...(published.serviceWindow ? { serviceWindow: published.serviceWindow } : {}) });
+        }
         return value;
       }));
       const values = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
       const issues = results.flatMap((result, index) => result.status === "rejected"
-        ? [`${directory.merchants[index].name}: холболт эсвэл саналын формат буруу.`]
+        ? [`${eligible[index].name}: холболт эсвэл саналын формат буруу.`]
         : result.value.outcome !== "quoted" ? [`${names[result.value.merchantId]}: ${result.value.message}`] : []);
-      return { quotes: combineOffers(goal, values, names), issues };
+      return { quotes: assessment ? combineRepairOffers(goal, values, names) : combineOffers(goal, values, names), issues };
     },
     negotiate: input => checkedNegotiation(input, false),
     negotiationResult: input => checkedNegotiation(input, true),
